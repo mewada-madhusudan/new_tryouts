@@ -1,0 +1,266 @@
+Backend (Python) — 10 Prompts
+
+B1 — Project scaffold & FastAPI setup
+
+Set up a FastAPI backend that wraps an existing working Python automation codebase. The existing code will be copied into the project as-is. Do not rewrite it.
+Create this folder structure:
+app/
+  main.py
+  config.py
+  routers/
+  services/
+  models/
+  utils/
+existing/               ← existing code lives here, untouched
+  helpers/
+    common.py
+    errors.py
+    fetch_token.py
+  personal_routes/
+    draft_mail.py
+    reminder.py
+    track_mail.py
+    download_attachments.py
+  shared_routes/
+    draft_mail.py
+    reminder.py
+    track_mail.py
+    download_attachments.py
+  workers/
+    draft_mail.py
+    reminder.py
+    track_mail.py
+    download_attachments.py
+  email_manager.py
+data/
+  tasks.json
+  logs/
+  meta.json
+In config.py use pydantic-settings to load .env. Settings: APP_ENV, LOG_DIR, TASKS_FILE, EXCHANGE_SERVER, EXCHANGE_USERNAME, EXCHANGE_PASSWORD, GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, ALLOWED_ORIGINS.
+In main.py: create FastAPI app, CORS middleware, mount all routers under /api, add /api/health endpoint. Add a lifespan event that creates data/logs/ and data/ directories if missing using Path.mkdir(parents=True, exist_ok=True).
+requirements.txt: fastapi, uvicorn, pydantic, pydantic-settings, python-dotenv, openpyxl, exchangelib, msal, httpx, apscheduler.
+No endpoints beyond /health yet. No changes to anything inside existing/.
+
+
+B2 — Task config data layer
+
+Build the data layer for reading and writing task configurations. Tasks are stored in data/tasks.json as a JSON array.
+Define Pydantic models in app/models/task.py:
+
+TaskType: Enum — draft_send, reminder, email_tracking, download
+ScheduleType: Enum — every_15_min, every_1_hour, daily, adhoc
+TaskBase: shared fields — process_name, task_type, schedule_type, daily_time (optional str HH:MM), is_shared_mailbox (bool), mailbox, log_output_folder, need_to_process (bool, default True)
+DraftReminderConfig: fields from Draft and Reminder setting JSON — subject_line, to_stakeholders, cc_stakeholders, attachment_folder_path, attachment_file_name, email_body_source (excel/docx), email_body_path, reminder_body_path (optional), draft_or_send, find_replace_pairs (list of {find, replace}, max 5), voting_option (optional)
+EmailTrackingConfig: fields from EmailTracking setting JSON
+DownloadConfig: fields from Download setting JSON
+Task: combines TaskBase + a config field (union of the 3 config types discriminated by task_type) + id (UUID), enabled (bool), created_at, updated_at, last_run_at (optional)
+
+Create app/services/task_store.py with functions: load_tasks(), save_tasks(tasks), get_task_by_id(id), create_task(task_data), update_task(id, data), delete_task(id). All read/write from data/tasks.json. Use file locking (fcntl on Unix / msvcrt on Windows) to prevent concurrent write corruption.
+
+
+B3 — Tasks API router
+
+Build app/routers/tasks.py — all CRUD endpoints for tasks.
+Endpoints:
+
+GET /api/tasks — query params: type (all/scheduled), status (all/enabled/disabled). Returns list of tasks. Scheduled = tasks where schedule_type != adhoc.
+GET /api/tasks/:id — returns single task with full config
+POST /api/tasks — creates new task. Validates required fields by task type. Generates UUID, sets created_at. Returns created task.
+PATCH /api/tasks/:id — partial update (for editing a task)
+PATCH /api/tasks/:id/toggle — flips the enabled boolean only. Returns updated task.
+DELETE /api/tasks/:id — removes task from JSON store
+GET /api/tasks/summary — returns {total, enabled, disabled, by_type: {draft_send: n, ...}}
+
+All endpoints use the service functions from B2. Return consistent error responses: {"error": "message", "detail": "..."} with appropriate HTTP status codes (404 for not found, 422 for validation errors — FastAPI handles 422 automatically).
+Add request/response logging middleware in main.py that logs method, path, status code, and duration for every request.
+
+
+B4 — Mailbox connection layer (exchangelib + Graph API)
+
+Build app/services/mailbox_service.py. This is a thin adapter that calls the existing code in existing/ — do not rewrite the existing logic.
+Study the existing files before writing anything:
+
+existing/helpers/fetch_token.py — understand how Graph API authentication is done
+existing/helpers/common.py — understand shared utilities
+existing/helpers/errors.py — understand custom error types
+existing/email_manager.py — understand how it determines personal vs shared mailbox
+
+Based on what you read, create a MailboxRouter class in app/services/mailbox_service.py:
+pythonclass MailboxRouter:
+    def __init__(self, is_shared: bool, mailbox: str):
+        self.is_shared = is_shared
+        self.mailbox = mailbox
+
+    def get_emails(self, filter: str = "all", limit: int = 50) -> list[dict]:
+        # Use exchangelib for personal, Graph API for shared
+        # Mirror how email_manager.py makes this decision
+        ...
+
+    def get_email_by_id(self, email_id: str) -> dict:
+        ...
+
+    def send_email(self, payload: dict) -> bool:
+        ...
+
+    def save_draft(self, payload: dict) -> bool:
+        ...
+Authentication must reuse existing/helpers/fetch_token.py exactly — import and call it, do not duplicate token logic. Custom errors from existing/helpers/errors.py must propagate up and be caught in the router layer.
+Return format for each email dict: {id, subject, sender_name, sender_email, to, preview, body, timestamp, is_read, has_attachments} — map from whatever the existing code returns.
+
+B5 — Mailbox API router
+
+Build app/routers/mailbox.py — endpoints the Mailbox page (F4) calls.
+Endpoints:
+
+GET /api/mailbox/emails — query params: filter (all/unread), limit (default 50). Uses get_mailbox_service() from B4 with config loaded from the default personal mailbox settings in .env. Returns {emails: [...], total: n, unread_count: n}.
+GET /api/mailbox/emails/:id — returns single email with full body
+POST /api/mailbox/emails/:id/reply — body: {message: str}. Sends reply via mailbox service.
+POST /api/mailbox/emails/:id/forward — body: {to: str, message: str}
+PATCH /api/mailbox/emails/:id/archive — moves email to Archive folder
+DELETE /api/mailbox/emails/:id — moves to Deleted Items
+
+All endpoints wrap mailbox service calls in try/except. On exchangelib connection error return 503 with {"error": "Cannot connect to mailbox", "detail": str(e)}. On Graph API auth failure return 401.
+Keep mailbox service instance cached per request using FastAPI dependency injection (Depends()). Do not reconnect on every call.
+
+
+B6 — Task execution engine
+
+Build app/tasks/executor.py. This wraps the existing existing/workers/ files — do not rewrite them.
+First read all 4 worker files (draft_mail.py, reminder.py, track_mail.py, download_attachments.py) and existing/email_manager.py to understand:
+
+What arguments each worker expects
+How email_manager.py currently calls them
+What each worker returns or raises
+
+Then build TaskExecutor:
+pythonclass TaskExecutor:
+    def __init__(self, task: Task):
+        self.task = task
+        self.log_entries = []
+        self.run_id = str(uuid4())
+        self.started_at = datetime.utcnow()
+
+    def run(self) -> ExecutionResult:
+        try:
+            self._log("INFO", f"Starting task: {self.task.process_name}")
+            self._dispatch()
+            status = "success"
+        except Exception as e:
+            self._log("ERROR", str(e))
+            status = "failed"
+        finally:
+            self._write_log(status)
+            self._update_last_run()
+        return ExecutionResult(...)
+
+    def _dispatch(self):
+        # Map task.task_type to the correct existing worker
+        # Pass task config fields as the worker expects them
+        # Mirror how email_manager.py calls each worker
+        ...
+
+    def _log(self, level: str, message: str):
+        self.log_entries.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": level,
+            "message": message
+        })
+The _dispatch method must call the existing workers exactly as email_manager.py does — same argument names, same structure. The Task config fields (from B2 Pydantic models) must be mapped to whatever dict/args format the workers expect. If the workers read from an Excel row dict, build that dict from the Task model fields.
+Capture any stdout/print output from the existing workers and append to self.log_entries so logs are complete.
+Do not modify any file inside existing/. Only import from it.
+
+
+B7 — Log storage & Logs API router
+
+Build the logging system. Each task run writes a structured JSON file to data/logs/.
+Log file format (data/logs/{run_id}.json):
+json{
+  "run_id": "uuid",
+  "task_id": "uuid",
+  "task_name": "Weekly Invoice Digest",
+  "task_type": "draft_send",
+  "status": "success|failed|skipped",
+  "started_at": "ISO datetime",
+  "completed_at": "ISO datetime",
+  "duration_ms": 1240,
+  "entries": [
+    {"timestamp": "...", "level": "INFO|WARNING|ERROR", "message": "..."}
+  ]
+}
+Create app/services/log_service.py:
+
+write_log(result: ExecutionResult) — writes the JSON file
+list_logs(status, start_date, end_date, search, page, page_size) — reads all log files from data/logs/, filters in memory, paginates, returns summary list (no entries array — just metadata)
+get_log(run_id) — returns full log file including entries
+get_log_summary() — returns {total, success, failed, skipped}
+export_logs(start_date, end_date) — returns a list of matching full log dicts for download
+
+Build app/routers/logs.py:
+
+GET /api/logs — query params: status, start, end, search, page (default 1), page_size (default 15)
+GET /api/logs/summary — for the stat strip
+GET /api/logs/:run_id — full log with entries
+GET /api/logs/export — returns JSON file download of filtered logs
+
+
+
+B8 — Scheduler (APScheduler)
+
+Add apscheduler to requirements.txt. Build app/tasks/scheduler.py.
+Use APScheduler with BackgroundScheduler. On app startup (FastAPI lifespan event), load all enabled tasks from task store and register them as jobs based on their schedule_type:
+
+every_15_min → IntervalTrigger(minutes=15)
+every_1_hour → IntervalTrigger(hours=1)
+daily → CronTrigger(hour=HH, minute=MM) using the task's daily_time
+adhoc → do not register (run only on manual trigger)
+
+Each scheduled job calls TaskExecutor(task).run().
+Expose functions: register_task(task), unregister_task(task_id), trigger_task_now(task_id) — this is what the "Run Now" button calls.
+Wire to the tasks router:
+
+POST /api/tasks/:id/run — calls trigger_task_now(task_id). Returns {run_id, status: "triggered"} immediately (do not wait for completion — run in background thread).
+When a task is toggled off (PATCH /api/tasks/:id/toggle → enabled=False): call unregister_task.
+When toggled on: call register_task.
+When a task is created with a non-adhoc schedule: auto-register it.
+When a task is deleted: unregister it.
+
+On app shutdown (lifespan end): call scheduler.shutdown().
+
+
+B9 — Import / Export router
+
+Build app/routers/import_export.py.
+Import:
+The Excel file has 3 sheets: "Draft" (covers Draft/Send and Reminder rows), "Email Tracking", "Download". Column names match exactly the JSON field names provided (map them to snake_case in the importer).
+
+GET /api/import/template — generates and returns a blank Excel file with the 3 correct sheets and header rows using openpyxl. Response: file download with Content-Disposition: attachment; filename=task_template.xlsx
+POST /api/import/upload — accepts multipart/form-data with an .xlsx file. Parse each sheet, map rows to Task Pydantic models, validate, write to task store. Return {imported: n, skipped: n, errors: [{row, reason}]}. Skip rows where "Need to Process" = "N". Rows already existing by Process Name: update rather than duplicate.
+
+Export:
+
+GET /api/export/meta — returns {last_exported_at: ISO datetime or null} (store this in a small data/meta.json file, updated on every export)
+GET /api/export/estimate — query params same as export options. Returns {estimated_bytes: n} based on current data size estimate
+POST /api/export — body: {format: "json"|"excel", include_tasks: bool, include_logs: bool, start_date, end_date}. Builds and returns a file download. Excel format: same 3-sheet structure as import. JSON format: {tasks: [...], logs: [...]}. Update last_exported_at in meta.json.
+
+
+
+B10 — Final wiring, error handling & run instructions
+
+Final backend integration pass.
+Global exception handler in main.py: catch all unhandled exceptions, log them with Python's logging module, return {"error": "Internal server error", "detail": str(e)} with status 500. Never expose raw tracebacks to the frontend.
+Structured logging: Configure Python logging to write to both stdout and data/logs/app.log using a rotating file handler (max 5MB, keep 3 backups). Log format: %(asctime)s | %(levelname)s | %(name)s | %(message)s.
+CORS final config: Allow origins ["http://localhost:5173"] in dev, load allowed origins from ALLOWED_ORIGINS env var in production.
+/api/health enhancement: Return {status, timestamp, tasks_loaded: n, scheduler_running: bool, log_dir_writable: bool}.
+README.md: Write a concise setup guide:
+
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+Copy .env.example to .env and fill in credentials
+uvicorn app.main:app --reload --port 8000
+Frontend: cd frontend && npm install && npm run dev
+
+Create .env.example with all required keys and placeholder values, documented with inline comments.
+Final check instruction to Copilot: Verify that every router is mounted in main.py, every service used by a router is imported correctly, the scheduler starts on app boot, and the log directory is created if it doesn't exist (data/logs/ and data/ auto-created on startup using Path.mkdir(parents=True, exist_ok=True)).
+
+
+Run these in order, share your existing tool code after B6 so Copilot can fill in the actual _run_draft_send(), _run_reminder(), _run_email_tracking(), and _run_download() stubs with your real logic. That's the cleanest handoff point.
