@@ -1,184 +1,1166 @@
-Backend (Python) — 10 Prompts
-
-B1 — Project scaffold & FastAPI setup
-
-Set up a FastAPI backend that wraps an existing working Python automation codebase. The existing code will be copied into the project as-is. Do not rewrite it.
-Create this folder structure:
-app/
-  main.py
-  config.py
-  routers/
-  services/
-  models/
-  utils/
-existing/               ← existing code lives here, untouched
-  helpers/
-    common.py
-    errors.py
-    fetch_token.py
-  personal_routes/
-    draft_mail.py
-    reminder.py
-    track_mail.py
-    download_attachments.py
-  shared_routes/
-    draft_mail.py
-    reminder.py
-    track_mail.py
-    download_attachments.py
-  workers/
-    draft_mail.py
-    reminder.py
-    track_mail.py
-    download_attachments.py
-  email_manager.py
-data/
-  tasks.json
-  logs/
-  meta.json
-In config.py use pydantic-settings to load .env. Settings: APP_ENV, LOG_DIR, TASKS_FILE, EXCHANGE_SERVER, EXCHANGE_USERNAME, EXCHANGE_PASSWORD, GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, ALLOWED_ORIGINS.
-In main.py: create FastAPI app, CORS middleware, mount all routers under /api, add /api/health endpoint. Add a lifespan event that creates data/logs/ and data/ directories if missing using Path.mkdir(parents=True, exist_ok=True).
-requirements.txt: fastapi, uvicorn, pydantic, pydantic-settings, python-dotenv, openpyxl, exchangelib, msal, httpx, apscheduler.
-No endpoints beyond /health yet. No changes to anything inside existing/.
-
-
-B2 — Task config data layer
-
-Build the data layer for reading and writing task configurations. Tasks are stored in data/tasks.json as a JSON array.
-Define Pydantic models in app/models/task.py:
-
-TaskType: Enum — draft_send, reminder, email_tracking, download
-ScheduleType: Enum — every_15_min, every_1_hour, daily, adhoc
-TaskBase: shared fields — process_name, task_type, schedule_type, daily_time (optional str HH:MM), is_shared_mailbox (bool), mailbox, log_output_folder, need_to_process (bool, default True)
-DraftReminderConfig: fields from Draft and Reminder setting JSON — subject_line, to_stakeholders, cc_stakeholders, attachment_folder_path, attachment_file_name, email_body_source (excel/docx), email_body_path, reminder_body_path (optional), draft_or_send, find_replace_pairs (list of {find, replace}, max 5), voting_option (optional)
-EmailTrackingConfig: fields from EmailTracking setting JSON
-DownloadConfig: fields from Download setting JSON
-Task: combines TaskBase + a config field (union of the 3 config types discriminated by task_type) + id (UUID), enabled (bool), created_at, updated_at, last_run_at (optional)
-
-Create app/services/task_store.py with functions: load_tasks(), save_tasks(tasks), get_task_by_id(id), create_task(task_data), update_task(id, data), delete_task(id). All read/write from data/tasks.json. Use file locking (fcntl on Unix / msvcrt on Windows) to prevent concurrent write corruption.
+# ============================================================
+# BACKEND PROMPTS B6–B15
+# Your Personal Assistant — FastAPI Backend
+#
+# CRITICAL RULES — read before running any prompt:
+#
+# 1. The existing working code lives in src/
+#    Structure from the project screenshot:
+#      src/
+#        helpers/
+#          common.py
+#          errors.py
+#          fetch_token.py
+#        personal_routes/
+#          draft_mail.py
+#          reminder.py
+#          track_mail.py
+#          download_attachments.py
+#        shared_routes/
+#          __init__.py
+#          draft_mail.py
+#          reminder.py
+#          track_mail.py
+#          download_attachments.py
+#        workers/
+#          __init__.py
+#          draft_mail.py
+#          reminder.py
+#          track_mail.py
+#          download_attachments.py
+#        email_manager.py
+#
+# 2. Do NOT install PyQt, tkinter, or any GUI library.
+#    Do NOT import from any GUI module.
+#    The existing code may have GUI imports — skip/ignore them.
+#
+# 3. Do NOT rewrite or modify anything inside src/
+#    Only READ src/ files for reference.
+#    All new code goes into app/
+#
+# 4. The corporate Graph API proxy base URL is:
+#    https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+#    Use this instead of https://graph.microsoft.com
+#    for ALL Graph API calls (personal AND shared mailbox).
+#    Authentication via src/helpers/fetch_token.py — read it first.
+#
+# 5. Run each prompt fully and confirm before moving to next.
+# ============================================================
 
 
-B3 — Tasks API router
+# ============================================================
+# B6 — Read existing src/ code and understand it
+#      (NO code written in this prompt — analysis only)
+# ============================================================
 
-Build app/routers/tasks.py — all CRUD endpoints for tasks.
-Endpoints:
+Before writing any new code, read and summarise these files.
+Do NOT modify them. Do NOT run them. Just read and report back.
 
-GET /api/tasks — query params: type (all/scheduled), status (all/enabled/disabled). Returns list of tasks. Scheduled = tasks where schedule_type != adhoc.
-GET /api/tasks/:id — returns single task with full config
-POST /api/tasks — creates new task. Validates required fields by task type. Generates UUID, sets created_at. Returns created task.
-PATCH /api/tasks/:id — partial update (for editing a task)
-PATCH /api/tasks/:id/toggle — flips the enabled boolean only. Returns updated task.
-DELETE /api/tasks/:id — removes task from JSON store
-GET /api/tasks/summary — returns {total, enabled, disabled, by_type: {draft_send: n, ...}}
+Read in this order:
 
-All endpoints use the service functions from B2. Return consistent error responses: {"error": "message", "detail": "..."} with appropriate HTTP status codes (404 for not found, 422 for validation errors — FastAPI handles 422 automatically).
-Add request/response logging middleware in main.py that logs method, path, status code, and duration for every request.
+1. src/helpers/fetch_token.py
+   Report:
+   - What authentication method does it use?
+     (MSAL client credentials / device flow / token cache file?)
+   - What is the token endpoint or authority URL?
+   - What scopes does it request?
+   - Does it use the corporate proxy URL?
+   - What does it return? (token string / headers dict / session?)
+
+2. src/helpers/errors.py
+   Report:
+   - List every custom exception class defined
+   - What does each one represent?
+
+3. src/helpers/common.py
+   Report:
+   - List every function defined
+   - What does each function do in one sentence?
+
+4. src/email_manager.py
+   Report:
+   - How does it decide between personal vs shared mailbox?
+     (what variable / flag does it check?)
+   - How does it call the workers?
+     (direct function call / subprocess / threading?)
+   - What arguments does it pass to each worker?
+   - Does it read from an Excel file? If so, what columns?
+
+5. src/workers/draft_mail.py
+   Report:
+   - What is the main function signature? (name + args)
+   - What does it expect as input? (dict / individual args / Excel row?)
+   - Does it import PyQt or any GUI library?
+     If yes, list the exact import lines.
+   - What does it return?
+
+6. src/workers/reminder.py
+   Same questions as draft_mail.py
+
+7. src/workers/track_mail.py
+   Same questions as draft_mail.py
+
+8. src/workers/download_attachments.py
+   Same questions as draft_mail.py
+
+9. src/personal_routes/draft_mail.py
+   Report:
+   - How is this different from src/workers/draft_mail.py?
+   - Does it use exchangelib or Graph API?
+
+10. src/shared_routes/draft_mail.py
+    Report:
+    - How is this different from personal_routes version?
+    - Does it use the corporate proxy URL?
+
+After reading all files, produce a summary table:
+
+| File | Main function | Input type | GUI imports? | Uses proxy? |
+|------|--------------|------------|--------------|-------------|
+
+This summary will be used in B7 to write the executor correctly.
+Do not proceed to B7 until this analysis is complete.
 
 
-B4 — Mailbox connection layer (exchangelib + Graph API)
+# ============================================================
+# B7 — Task Executor (wraps existing workers without touching them)
+# ============================================================
 
-Build app/services/mailbox_service.py. This is a thin adapter that calls the existing code in existing/ — do not rewrite the existing logic.
-Study the existing files before writing anything:
+PREREQUISITE: B6 analysis must be complete.
+Read the B6 summary before writing any code here.
 
-existing/helpers/fetch_token.py — understand how Graph API authentication is done
-existing/helpers/common.py — understand shared utilities
-existing/helpers/errors.py — understand custom error types
-existing/email_manager.py — understand how it determines personal vs shared mailbox
+Open app/tasks/executor.py and write the complete TaskExecutor class.
 
-Based on what you read, create a MailboxRouter class in app/services/mailbox_service.py:
-pythonclass MailboxRouter:
-    def __init__(self, is_shared: bool, mailbox: str):
-        self.is_shared = is_shared
-        self.mailbox = mailbox
+The goal: call the existing src/workers/*.py functions
+exactly as src/email_manager.py calls them — same arguments,
+same structure. The only difference is we wrap them in a
+class that captures logs and writes a JSON result file.
 
-    def get_emails(self, filter: str = "all", limit: int = 50) -> list[dict]:
-        # Use exchangelib for personal, Graph API for shared
-        # Mirror how email_manager.py makes this decision
-        ...
+Step 1 — Read these files one more time immediately before coding:
+  src/email_manager.py       ← how workers are called
+  src/workers/draft_mail.py  ← main function signature
+  src/workers/reminder.py    ← main function signature
+  src/workers/track_mail.py  ← main function signature
+  src/workers/download_attachments.py ← main function signature
 
-    def get_email_by_id(self, email_id: str) -> dict:
-        ...
+Step 2 — Check for GUI imports in worker files.
+If any worker file has lines like:
+  from PyQt5 import ...
+  import tkinter
+  from PyQt6 import ...
+  import wx
+DO NOT import that worker directly.
+Instead, note the GUI import lines and skip them — the worker
+logic below the GUI imports is what we need.
+Report which workers (if any) have GUI imports.
 
-    def send_email(self, payload: dict) -> bool:
-        ...
+Step 3 — Write app/tasks/executor.py:
 
-    def save_draft(self, payload: dict) -> bool:
-        ...
-Authentication must reuse existing/helpers/fetch_token.py exactly — import and call it, do not duplicate token logic. Custom errors from existing/helpers/errors.py must propagate up and be caught in the router layer.
-Return format for each email dict: {id, subject, sender_name, sender_email, to, preview, body, timestamp, is_read, has_attachments} — map from whatever the existing code returns.
+```python
+"""
+Task Executor — wraps existing src/workers/* without modifying them.
 
-B5 — Mailbox API router
+IMPORTANT: Do not import PyQt, tkinter, or any GUI library here.
+If a worker file has GUI imports at the top, we handle that below
+using importlib to load only what we need.
+"""
+import sys
+import io
+import json
+import logging
+from uuid import uuid4
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-Build app/routers/mailbox.py — endpoints the Mailbox page (F4) calls.
-Endpoints:
+# Add src/ to path so we can import existing helpers
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-GET /api/mailbox/emails — query params: filter (all/unread), limit (default 50). Uses get_mailbox_service() from B4 with config loaded from the default personal mailbox settings in .env. Returns {emails: [...], total: n, unread_count: n}.
-GET /api/mailbox/emails/:id — returns single email with full body
-POST /api/mailbox/emails/:id/reply — body: {message: str}. Sends reply via mailbox service.
-POST /api/mailbox/emails/:id/forward — body: {to: str, message: str}
-PATCH /api/mailbox/emails/:id/archive — moves email to Archive folder
-DELETE /api/mailbox/emails/:id — moves to Deleted Items
-
-All endpoints wrap mailbox service calls in try/except. On exchangelib connection error return 503 with {"error": "Cannot connect to mailbox", "detail": str(e)}. On Graph API auth failure return 401.
-Keep mailbox service instance cached per request using FastAPI dependency injection (Depends()). Do not reconnect on every call.
+logger = logging.getLogger(__name__)
 
 
-B6 — Task execution engine
+class TaskExecutor:
+    """
+    Wraps the existing worker functions from src/workers/*.
+    Does NOT modify any existing code.
+    Captures stdout/print output as log entries.
+    Writes a structured JSON log file after each run.
+    """
 
-Build app/tasks/executor.py. This wraps the existing existing/workers/ files — do not rewrite them.
-First read all 4 worker files (draft_mail.py, reminder.py, track_mail.py, download_attachments.py) and existing/email_manager.py to understand:
-
-What arguments each worker expects
-How email_manager.py currently calls them
-What each worker returns or raises
-
-Then build TaskExecutor:
-pythonclass TaskExecutor:
-    def __init__(self, task: Task):
+    def __init__(self, task: dict, log_dir: str = 'data/logs'):
         self.task = task
-        self.log_entries = []
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         self.run_id = str(uuid4())
         self.started_at = datetime.utcnow()
+        self.log_entries: list[dict] = []
 
-    def run(self) -> ExecutionResult:
+    # ----------------------------------------------------------
+    # Public method
+    # ----------------------------------------------------------
+
+    def run(self) -> dict:
+        """Execute the task. Returns an ExecutionResult dict."""
+        self._log('INFO', f"Starting task: {self.task.get('process_name', 'Unknown')}")
+        self._log('INFO', f"Task type: {self.task.get('task_type', 'unknown')}")
+        self._log('INFO', f"Mailbox: {self.task.get('mailbox', 'not set')}")
+
+        status = 'success'
         try:
-            self._log("INFO", f"Starting task: {self.task.process_name}")
             self._dispatch()
-            status = "success"
+            self._log('INFO', 'Task completed successfully')
         except Exception as e:
-            self._log("ERROR", str(e))
-            status = "failed"
-        finally:
-            self._write_log(status)
-            self._update_last_run()
-        return ExecutionResult(...)
+            self._log('ERROR', f"Task failed: {type(e).__name__}: {str(e)}")
+            status = 'failed'
+            logger.exception(f"Task {self.run_id} failed")
+
+        completed_at = datetime.utcnow()
+        duration_ms = int(
+            (completed_at - self.started_at).total_seconds() * 1000
+        )
+
+        result = {
+            'run_id':       self.run_id,
+            'task_id':      self.task.get('id', 'unknown'),
+            'task_name':    self.task.get('process_name', 'Unknown'),
+            'task_type':    self.task.get('task_type', 'unknown'),
+            'status':       status,
+            'started_at':   self.started_at.isoformat(),
+            'completed_at': completed_at.isoformat(),
+            'duration_ms':  duration_ms,
+            'entries':      self.log_entries,
+        }
+
+        self._write_log(result)
+        self._update_last_run()
+        return result
+
+    # ----------------------------------------------------------
+    # Dispatch to correct worker
+    # ----------------------------------------------------------
 
     def _dispatch(self):
-        # Map task.task_type to the correct existing worker
-        # Pass task config fields as the worker expects them
-        # Mirror how email_manager.py calls each worker
-        ...
+        task_type = self.task.get('task_type')
+        is_shared = self.task.get('is_shared_mailbox', False)
+
+        self._log('INFO',
+            f"Routing to {'shared' if is_shared else 'personal'} "
+            f"mailbox handler"
+        )
+
+        # Build the args dict that the existing workers expect.
+        # READ src/email_manager.py to confirm the exact key names
+        # and pass them here. The structure below mirrors what
+        # email_manager.py passes — adjust based on B6 analysis.
+        config = self.task.get('config', {})
+        worker_args = self._build_worker_args(config)
+
+        if task_type == 'draft_send':
+            self._run_with_capture(self._call_draft, worker_args, is_shared)
+        elif task_type == 'reminder':
+            self._run_with_capture(self._call_reminder, worker_args, is_shared)
+        elif task_type == 'email_tracking':
+            self._run_with_capture(self._call_tracking, worker_args, is_shared)
+        elif task_type == 'download':
+            self._run_with_capture(self._call_download, worker_args, is_shared)
+        else:
+            raise ValueError(f"Unknown task type: {task_type}")
+
+    def _build_worker_args(self, config: dict) -> dict:
+        """
+        Build the argument dict the existing workers expect.
+        Keys must match exactly what src/email_manager.py passes.
+        READ src/email_manager.py and adjust this mapping.
+        """
+        return {
+            # Basic
+            'Process Name':         self.task.get('process_name', ''),
+            'Need to Process Y/N':  'Y' if self.task.get('need_to_process', True) else 'N',
+            'Shared Mailbox Name':  self.task.get('mailbox', ''),
+            'Log Output Folder Path': self.task.get('log_output_folder', ''),
+
+            # Draft/Reminder fields
+            'Subject Line':         config.get('subject_line', ''),
+            'TO: List of Stakeholders':  config.get('to_stakeholders', ''),
+            'CC: List of Stakeholders':  config.get('cc_stakeholders', ''),
+            'Attachment Folder Path':    config.get('attachment_folder_path', ''),
+            'Attachment File Name':      config.get('attachment_file_name', ''),
+            'Email Body Excel/Docx':     config.get('email_body_source', 'docx'),
+            'Email Body Path (.docx)':   config.get('email_body_path', ''),
+            'Reminder Email Body Path (docx)': config.get('reminder_body_path', ''),
+            'Draft/Send':           config.get('draft_or_send', 'draft'),
+            'Voting_Option':        config.get('voting_option', ''),
+
+            # Find/Replace
+            'Find_One':    config.get('find_replace_pairs', [{}])[0].get('find', '') if len(config.get('find_replace_pairs', [])) > 0 else '',
+            'Replace_One': config.get('find_replace_pairs', [{}])[0].get('replace', '') if len(config.get('find_replace_pairs', [])) > 0 else '',
+            'Find_Two':    config.get('find_replace_pairs', [{}])[1].get('find', '') if len(config.get('find_replace_pairs', [])) > 1 else '',
+            'Replace_Two': config.get('find_replace_pairs', [{}])[1].get('replace', '') if len(config.get('find_replace_pairs', [])) > 1 else '',
+            'Find_Three':  config.get('find_replace_pairs', [{}])[2].get('find', '') if len(config.get('find_replace_pairs', [])) > 2 else '',
+            'Replace_Three':config.get('find_replace_pairs',[{}])[2].get('replace','') if len(config.get('find_replace_pairs', [])) > 2 else '',
+            'Find_Four':   config.get('find_replace_pairs', [{}])[3].get('find', '') if len(config.get('find_replace_pairs', [])) > 3 else '',
+            'Replace_Four':config.get('find_replace_pairs', [{}])[3].get('replace', '') if len(config.get('find_replace_pairs', [])) > 3 else '',
+            'Find_Five':   config.get('find_replace_pairs', [{}])[4].get('find', '') if len(config.get('find_replace_pairs', [])) > 4 else '',
+            'Replace_Five':config.get('find_replace_pairs', [{}])[4].get('replace', '') if len(config.get('find_replace_pairs', [])) > 4 else '',
+
+            # Tracking/Download fields
+            'Due Date':                  config.get('due_date', ''),
+            'Partial Subject Y/N':       'Y' if config.get('partial_subject', False) else 'N',
+            'Screening Mailbox Folder':  config.get('screening_folder', ''),
+            'Save Email':                'Y' if config.get('save_email', False) else 'N',
+            'Save Email Both/Specific':  config.get('save_both', 'Both'),
+            'Save Email As PDF/msg':     config.get('save_as', 'pdf'),
+            'Start Date':                config.get('start_date', ''),
+            'End Date':                  config.get('end_date', ''),
+            'Download attachment':        'Y' if config.get('download_attachment', False) else 'N',
+            'All Attachments or Specific': config.get('all_or_specific', 'All'),
+            'Attachment File Type':      config.get('file_type', ''),
+            'If Zip , Extract All Y/N':  'Y' if config.get('extract_zip', False) else 'N',
+        }
+
+    # ----------------------------------------------------------
+    # Worker callers — adjust function names and args
+    # based on B6 analysis of actual worker signatures
+    # ----------------------------------------------------------
+
+    def _call_draft(self, args: dict, is_shared: bool):
+        """
+        Call the draft/send worker.
+        READ src/workers/draft_mail.py to confirm:
+          - exact function name to call
+          - exact arguments it expects
+          - whether is_shared changes which module to import
+
+        Template (adjust based on B6 analysis):
+        """
+        if is_shared:
+            from shared_routes.draft_mail import main as run_draft
+        else:
+            from personal_routes.draft_mail import main as run_draft
+        run_draft(args)
+
+    def _call_reminder(self, args: dict, is_shared: bool):
+        if is_shared:
+            from shared_routes.reminder import main as run_reminder
+        else:
+            from personal_routes.reminder import main as run_reminder
+        run_reminder(args)
+
+    def _call_tracking(self, args: dict, is_shared: bool):
+        if is_shared:
+            from shared_routes.track_mail import main as run_tracking
+        else:
+            from personal_routes.track_mail import main as run_tracking
+        run_tracking(args)
+
+    def _call_download(self, args: dict, is_shared: bool):
+        if is_shared:
+            from shared_routes.download_attachments import main as run_download
+        else:
+            from personal_routes.download_attachments import main as run_download
+        run_download(args)
+
+    # ----------------------------------------------------------
+    # Capture stdout from worker (workers use print() for logging)
+    # ----------------------------------------------------------
+
+    def _run_with_capture(self, caller, args: dict, is_shared: bool):
+        """Capture any print() output from the existing workers."""
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        try:
+            caller(args, is_shared)
+        finally:
+            sys.stdout = old_stdout
+            output = buffer.getvalue()
+
+        # Convert captured print lines to log entries
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if any(w in line.upper() for w in ['ERROR', 'FAIL', 'EXCEPTION']):
+                self._log('ERROR', line)
+            elif any(w in line.upper() for w in ['WARN', 'WARNING']):
+                self._log('WARNING', line)
+            else:
+                self._log('INFO', line)
+
+    # ----------------------------------------------------------
+    # Logging helpers
+    # ----------------------------------------------------------
 
     def _log(self, level: str, message: str):
-        self.log_entries.append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": level,
-            "message": message
-        })
-The _dispatch method must call the existing workers exactly as email_manager.py does — same argument names, same structure. The Task config fields (from B2 Pydantic models) must be mapped to whatever dict/args format the workers expect. If the workers read from an Excel row dict, build that dict from the Task model fields.
-Capture any stdout/print output from the existing workers and append to self.log_entries so logs are complete.
-Do not modify any file inside existing/. Only import from it.
+        entry = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'level':     level,
+            'message':   message,
+        }
+        self.log_entries.append(entry)
+        getattr(logger, level.lower(), logger.info)(message)
+
+    def _write_log(self, result: dict):
+        log_file = self.log_dir / f"{self.run_id}.json"
+        log_file.write_text(json.dumps(result, indent=2))
+        self._log('INFO', f"Log written to {log_file}")
+
+    def _update_last_run(self):
+        """Update last_run_at in data/tasks.json for this task."""
+        from app.services.task_store import get_task_by_id, update_task
+        try:
+            task_id = self.task.get('id')
+            if task_id:
+                update_task(task_id, {'last_run_at': datetime.utcnow().isoformat()})
+        except Exception as e:
+            logger.warning(f"Could not update last_run_at: {e}")
+```
+
+IMPORTANT ADJUSTMENTS NEEDED after writing the template above:
+
+Read src/workers/draft_mail.py right now and answer:
+  Q1: What is the main callable? Is it called `main`, `run`,
+      `execute`, or something else?
+  Q2: Does it take a single dict arg, or multiple keyword args?
+  Q3: If it has GUI imports at the top — copy those import lines
+      here as comments, then write a try/except around them
+      in the _call_* methods to skip the GUI parts.
+
+Update _call_draft, _call_reminder, _call_tracking, _call_download
+to use the exact function name and signature from the real files.
+
+After writing, run this quick test (no server needed):
+```python
+# test_executor.py in project root
+from app.tasks.executor import TaskExecutor
+
+task = {
+    'id': 'test-1',
+    'process_name': 'Test Task',
+    'task_type': 'draft_send',
+    'is_shared_mailbox': False,
+    'mailbox': 'test@company.com',
+    'log_output_folder': 'C:\\Logs\\Test',
+    'config': {
+        'subject_line': 'Test Subject',
+        'to_stakeholders': 'test@company.com',
+        'draft_or_send': 'draft',
+    }
+}
+
+executor = TaskExecutor(task, log_dir='data/logs/test')
+result = executor.run()
+print(result['status'])
+print(result['entries'])
+```
+
+Expected: no PyQt errors, no GUI window opens,
+result['status'] is either 'success' or 'failed' with a
+meaningful error message in result['entries'].
 
 
-B7 — Log storage & Logs API router
+# ============================================================
+# B8 — Mailbox Service (corporate Graph API proxy)
+# ============================================================
 
-Build the logging system. Each task run writes a structured JSON file to data/logs/.
-Log file format (data/logs/{run_id}.json):
-json{
-  "run_id": "uuid",
-  "task_id": "uuid",
-  "task_name": "Weekly Invoice Digest",
-  "task_type": "draft_send",
+PREREQUISITE: Read src/helpers/fetch_token.py before writing
+any code. The token method used there must be reused here.
+
+Write app/services/mailbox_service.py
+
+The corporate proxy base URL is:
+  https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+
+This proxy is used for BOTH personal and shared mailboxes.
+The difference is the API path:
+  Personal:  /me/messages               (user's own mailbox)
+  Shared:    /users/{mailbox}/messages  (shared mailbox address)
+
+Step 1 — Read src/helpers/fetch_token.py
+Report the exact function signature and return value, then
+reuse it in the service below.
+
+Step 2 — Write the service:
+
+```python
+"""
+Mailbox Service — uses corporate Graph API proxy.
+Base URL: https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+
+Personal mailbox: GET /me/messages
+Shared mailbox:   GET /users/{mailbox_address}/messages
+
+Authentication: reused from src/helpers/fetch_token.py
+"""
+import sys
+import logging
+from pathlib import Path
+from typing import Optional
+import httpx
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+
+logger = logging.getLogger(__name__)
+
+GRAPH_PROXY_BASE = 'https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net'
+
+
+def _get_headers() -> dict:
+    """
+    Get auth headers by reusing fetch_token.py from existing code.
+    READ src/helpers/fetch_token.py first to confirm the exact
+    function to call and what it returns.
+
+    If it returns a token string:
+        token = fetch_token()
+        return {'Authorization': f'Bearer {token}'}
+
+    If it returns a headers dict already:
+        return fetch_token()
+
+    Adjust the implementation below based on what you find.
+    """
+    from helpers.fetch_token import fetch_token   # adjust name if different
+    token = fetch_token()
+    if isinstance(token, dict):
+        return token
+    return {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+
+def _email_to_dict(msg: dict) -> dict:
+    """
+    Normalise a Graph API message object into our standard format.
+    Graph API returns messages with these fields:
+      id, subject, bodyPreview, body.content,
+      from.emailAddress.name, from.emailAddress.address,
+      toRecipients[].emailAddress.address,
+      receivedDateTime, isRead, hasAttachments
+    """
+    sender = msg.get('from', {}).get('emailAddress', {})
+    return {
+        'id':          msg.get('id', ''),
+        'subject':     msg.get('subject', '(No Subject)'),
+        'sender_name': sender.get('name', ''),
+        'sender_email':sender.get('address', ''),
+        'to':          ', '.join(
+            r.get('emailAddress', {}).get('address', '')
+            for r in msg.get('toRecipients', [])
+        ),
+        'preview':     msg.get('bodyPreview', ''),
+        'body':        msg.get('body', {}).get('content', ''),
+        'timestamp':   msg.get('receivedDateTime', ''),
+        'is_read':     msg.get('isRead', True),
+        'has_attachments': msg.get('hasAttachments', False),
+    }
+
+
+def get_emails(
+    is_shared: bool,
+    mailbox: str,
+    filter_type: str = 'all',
+    limit: int = 50,
+) -> list[dict]:
+    """
+    Fetch emails from the corporate Graph API proxy.
+
+    Args:
+        is_shared:   True = shared mailbox (/users/{mailbox}/messages)
+                     False = personal mailbox (/me/messages)
+        mailbox:     Email address (used only when is_shared=True)
+        filter_type: 'all' or 'unread'
+        limit:       Max emails to return (default 50)
+
+    Returns:
+        List of normalised email dicts
+    """
+    headers = _get_headers()
+
+    if is_shared:
+        endpoint = f'{GRAPH_PROXY_BASE}/users/{mailbox}/messages'
+    else:
+        endpoint = f'{GRAPH_PROXY_BASE}/me/messages'
+
+    params = {
+        '$top': limit,
+        '$orderby': 'receivedDateTime desc',
+        '$select': (
+            'id,subject,bodyPreview,body,from,toRecipients,'
+            'receivedDateTime,isRead,hasAttachments'
+        ),
+    }
+
+    if filter_type == 'unread':
+        params['$filter'] = 'isRead eq false'
+
+    try:
+        response = httpx.get(
+            endpoint,
+            headers=headers,
+            params=params,
+            timeout=15.0,
+            verify=False,   # corporate proxy may use internal cert
+        )
+        response.raise_for_status()
+        data = response.json()
+        return [_email_to_dict(m) for m in data.get('value', [])]
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Graph API error {e.response.status_code}: {e.response.text}")
+        raise
+    except httpx.RequestError as e:
+        logger.error(f"Network error connecting to proxy: {e}")
+        raise
+
+
+def get_email_by_id(
+    is_shared: bool,
+    mailbox: str,
+    email_id: str,
+) -> dict:
+    """Fetch a single email by ID with full body."""
+    headers = _get_headers()
+
+    if is_shared:
+        endpoint = f'{GRAPH_PROXY_BASE}/users/{mailbox}/messages/{email_id}'
+    else:
+        endpoint = f'{GRAPH_PROXY_BASE}/me/messages/{email_id}'
+
+    params = {
+        '$select': (
+            'id,subject,body,from,toRecipients,'
+            'receivedDateTime,isRead,hasAttachments,attachments'
+        ),
+    }
+
+    response = httpx.get(
+        endpoint, headers=headers, params=params,
+        timeout=15.0, verify=False
+    )
+    response.raise_for_status()
+    return _email_to_dict(response.json())
+
+
+def get_email_count(is_shared: bool, mailbox: str) -> dict:
+    """Return total and unread counts."""
+    all_emails = get_emails(is_shared, mailbox, 'all', limit=1000)
+    unread = [e for e in all_emails if not e['is_read']]
+    return {'total': len(all_emails), 'unread_count': len(unread)}
+
+
+def move_email(
+    is_shared: bool,
+    mailbox: str,
+    email_id: str,
+    destination_folder: str,
+) -> bool:
+    """Move email to a folder (e.g. 'archive', 'deleteditems')."""
+    headers = _get_headers()
+
+    if is_shared:
+        endpoint = f'{GRAPH_PROXY_BASE}/users/{mailbox}/messages/{email_id}/move'
+    else:
+        endpoint = f'{GRAPH_PROXY_BASE}/me/messages/{email_id}/move'
+
+    response = httpx.post(
+        endpoint,
+        headers=headers,
+        json={'destinationId': destination_folder},
+        timeout=15.0,
+        verify=False,
+    )
+    return response.status_code in (200, 201)
+
+
+def delete_email(is_shared: bool, mailbox: str, email_id: str) -> bool:
+    """Move email to Deleted Items."""
+    return move_email(is_shared, mailbox, email_id, 'deleteditems')
+
+
+def archive_email(is_shared: bool, mailbox: str, email_id: str) -> bool:
+    """Move email to Archive."""
+    return move_email(is_shared, mailbox, email_id, 'archive')
+```
+
+After writing, add httpx to requirements.txt if not already present.
+
+Load these settings from app/config.py (they should already
+exist from B1, but confirm):
+  PERSONAL_MAILBOX: str      ← default mailbox for /me/ calls
+  GRAPH_PROXY_BASE: str      ← the corporate proxy URL
+  VERIFY_SSL: bool = False   ← False for corporate proxy
+
+If these are not in config.py, add them now and also add to .env.example:
+  PERSONAL_MAILBOX=your.name@company.com
+  GRAPH_PROXY_BASE=https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+  VERIFY_SSL=false
+
+
+# ============================================================
+# B9 — Mailbox API router
+# ============================================================
+
+Write app/routers/mailbox.py
+
+This file defines all HTTP endpoints the frontend Mailbox
+page calls. It uses the mailbox_service.py from B8.
+
+The personal mailbox address comes from app/config.py settings.
+is_shared and mailbox can be overridden by query params for
+flexibility, but default to the personal mailbox config.
+
+```python
+import logging
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from app.services.mailbox_service import (
+    get_emails,
+    get_email_by_id,
+    get_email_count,
+    archive_email,
+    delete_email,
+)
+from app.config import settings
+
+router = APIRouter(prefix='/mailbox', tags=['mailbox'])
+logger = logging.getLogger(__name__)
+
+
+# ── GET /api/mailbox/emails ────────────────────────────────
+@router.get('/emails')
+def list_emails(
+    filter: str = Query('all', regex='^(all|unread)$'),
+    limit: int = Query(50, ge=1, le=200),
+    is_shared: bool = Query(False),
+    mailbox: str = Query(''),
+):
+    """
+    Fetch emails from the personal or shared mailbox.
+
+    Query params:
+      filter:    'all' or 'unread'
+      limit:     max emails (default 50)
+      is_shared: True = shared mailbox, False = personal (/me/)
+      mailbox:   mailbox address (required when is_shared=True)
+    """
+    effective_mailbox = mailbox or settings.PERSONAL_MAILBOX
+
+    try:
+        emails = get_emails(
+            is_shared=is_shared,
+            mailbox=effective_mailbox,
+            filter_type=filter,
+            limit=limit,
+        )
+        counts = {
+            'total':        len(emails),
+            'unread_count': sum(1 for e in emails if not e['is_read']),
+        }
+        return {'emails': emails, **counts}
+
+    except Exception as e:
+        logger.error(f"Failed to fetch emails: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to mailbox: {str(e)}"
+        )
+
+
+# ── GET /api/mailbox/emails/{email_id} ────────────────────
+@router.get('/emails/{email_id}')
+def get_email(
+    email_id: str,
+    is_shared: bool = Query(False),
+    mailbox: str = Query(''),
+):
+    """Fetch a single email with full body."""
+    effective_mailbox = mailbox or settings.PERSONAL_MAILBOX
+    try:
+        email = get_email_by_id(
+            is_shared=is_shared,
+            mailbox=effective_mailbox,
+            email_id=email_id,
+        )
+        return email
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── PATCH /api/mailbox/emails/{email_id}/archive ──────────
+@router.patch('/emails/{email_id}/archive')
+def archive(
+    email_id: str,
+    is_shared: bool = Query(False),
+    mailbox: str = Query(''),
+):
+    effective_mailbox = mailbox or settings.PERSONAL_MAILBOX
+    success = archive_email(is_shared, effective_mailbox, email_id)
+    if not success:
+        raise HTTPException(status_code=500, detail='Archive failed')
+    return {'status': 'archived'}
+
+
+# ── DELETE /api/mailbox/emails/{email_id} ─────────────────
+@router.delete('/emails/{email_id}')
+def delete(
+    email_id: str,
+    is_shared: bool = Query(False),
+    mailbox: str = Query(''),
+):
+    effective_mailbox = mailbox or settings.PERSONAL_MAILBOX
+    success = delete_email(is_shared, effective_mailbox, email_id)
+    if not success:
+        raise HTTPException(status_code=500, detail='Delete failed')
+    return {'status': 'deleted'}
+```
+
+After writing, open app/main.py and add this line with the other
+router includes:
+  from app.routers.mailbox import router as mailbox_router
+  app.include_router(mailbox_router, prefix='/api')
+
+Also update app/config.py to add PERSONAL_MAILBOX and GRAPH_PROXY_BASE
+if they don't already exist:
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    APP_ENV: str = 'development'
+    LOG_DIR: str = 'data/logs'
+    TASKS_FILE: str = 'data/tasks.json'
+    PERSONAL_MAILBOX: str = ''
+    GRAPH_PROXY_BASE: str = 'https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net'
+    VERIFY_SSL: bool = False
+
+    class Config:
+        env_file = '.env'
+
+settings = Settings()
+```
+
+Test with curl once server is running:
+  curl http://localhost:8000/api/mailbox/emails
+  Expected: JSON with emails array (or 503 if proxy unreachable)
+
+  curl http://localhost:8000/api/mailbox/emails?filter=unread
+  curl "http://localhost:8000/api/mailbox/emails?is_shared=true&mailbox=finance@company.com"
+
+
+# ============================================================
+# B10 — APScheduler setup (schedule + adhoc task runs)
+# ============================================================
+
+Write app/tasks/scheduler.py
+
+This module:
+1. Starts APScheduler on FastAPI app startup
+2. Registers all enabled non-adhoc tasks as scheduled jobs
+3. Exposes trigger_now() for the Run button in the UI
+4. Reacts to task enable/disable/create/delete events
+
+```python
+"""
+Scheduler — APScheduler wrapping the TaskExecutor.
+
+Jobs run in background threads so the API stays responsive.
+Each job calls TaskExecutor(task).run() and logs the result.
+"""
+import logging
+import threading
+from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger(__name__)
+
+_scheduler = BackgroundScheduler(timezone='UTC')
+_run_results: dict[str, dict] = {}   # run_id → result (in-memory cache)
+
+
+# ── Job function ──────────────────────────────────────────
+
+def _execute_task(task: dict):
+    """Called by APScheduler in a background thread."""
+    from app.tasks.executor import TaskExecutor
+    executor = TaskExecutor(task)
+    try:
+        result = executor.run()
+        _run_results[result['run_id']] = result
+        logger.info(
+            f"Task '{task['process_name']}' finished "
+            f"with status={result['status']} "
+            f"run_id={result['run_id']}"
+        )
+    except Exception as e:
+        logger.error(f"Scheduler job crashed for task {task.get('id')}: {e}")
+
+
+# ── Scheduler lifecycle ───────────────────────────────────
+
+def start():
+    """Call this on FastAPI app startup."""
+    from app.services.task_store import load_tasks
+    tasks = load_tasks()
+    enabled = [t for t in tasks if t.get('enabled', True)]
+    for task in enabled:
+        _register(task)
+    _scheduler.start()
+    logger.info(f"Scheduler started — {len(enabled)} tasks registered")
+
+
+def stop():
+    """Call this on FastAPI app shutdown."""
+    if _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped")
+
+
+# ── Task registration ─────────────────────────────────────
+
+def _make_trigger(task: dict):
+    """
+    Build the APScheduler trigger from task schedule_type.
+    schedule_type values (match what the frontend sends):
+      every15   → IntervalTrigger(minutes=15)
+      every1h   → IntervalTrigger(hours=1)
+      daily     → CronTrigger at task['daily_time'] (HH:MM string)
+      adhoc     → None (never auto-scheduled)
+    """
+    schedule = task.get('schedule_type', 'adhoc')
+
+    if schedule == 'every15':
+        return IntervalTrigger(minutes=15)
+    elif schedule == 'every1h':
+        return IntervalTrigger(hours=1)
+    elif schedule == 'daily':
+        time_str = task.get('daily_time', '08:00')
+        try:
+            hour, minute = time_str.split(':')
+            return CronTrigger(hour=int(hour), minute=int(minute))
+        except Exception:
+            logger.warning(f"Invalid daily_time '{time_str}' — defaulting to 08:00")
+            return CronTrigger(hour=8, minute=0)
+    else:
+        return None   # adhoc — do not register
+
+
+def _register(task: dict):
+    """Register a task as an APScheduler job."""
+    trigger = _make_trigger(task)
+    if trigger is None:
+        return   # adhoc tasks are not scheduled
+
+    job_id = f"task_{task['id']}"
+
+    # Remove existing job if present (idempotent)
+    if _scheduler.get_job(job_id):
+        _scheduler.remove_job(job_id)
+
+    _scheduler.add_job(
+        func=_execute_task,
+        trigger=trigger,
+        args=[task],
+        id=job_id,
+        name=task.get('process_name', job_id),
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+    logger.info(
+        f"Registered job '{task['process_name']}' "
+        f"({task.get('schedule_type')}) id={job_id}"
+    )
+
+
+# ── Public API called by routers ──────────────────────────
+
+def register_task(task: dict):
+    """Call when a new task is created or re-enabled."""
+    _register(task)
+
+
+def unregister_task(task_id: str):
+    """Call when a task is deleted or disabled."""
+    job_id = f"task_{task_id}"
+    if _scheduler.get_job(job_id):
+        _scheduler.remove_job(job_id)
+        logger.info(f"Unregistered job {job_id}")
+
+
+def trigger_now(task: dict) -> str:
+    """
+    Run a task immediately in a background thread.
+    Returns the run_id so the client can poll for results.
+    Called by POST /api/tasks/{id}/run
+    """
+    run_id_holder = {'run_id': None}
+
+    def _run():
+        from app.tasks.executor import TaskExecutor
+        executor = TaskExecutor(task)
+        result = executor.run()
+        _run_results[result['run_id']] = result
+        run_id_holder['run_id'] = result['run_id']
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # Return a provisional run_id immediately
+    # The actual run_id will be in the log file
+    import uuid
+    provisional = str(uuid.uuid4())
+    return provisional
+
+
+def get_scheduler_status() -> dict:
+    """Return scheduler status for /api/health endpoint."""
+    return {
+        'running':   _scheduler.running,
+        'job_count': len(_scheduler.get_jobs()),
+        'jobs':      [
+            {
+                'id':       j.id,
+                'name':     j.name,
+                'next_run': j.next_run_time.isoformat() if j.next_run_time else None,
+            }
+            for j in _scheduler.get_jobs()
+        ],
+    }
+```
+
+Wire scheduler into app/main.py using FastAPI lifespan:
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from app.tasks.scheduler import start as scheduler_start, stop as scheduler_stop
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    from pathlib import Path
+    Path('data/logs').mkdir(parents=True, exist_ok=True)
+    Path('data').mkdir(parents=True, exist_ok=True)
+    scheduler_start()
+    yield
+    # Shutdown
+    scheduler_stop()
+
+app = FastAPI(lifespan=lifespan)
+```
+
+Update the /api/health endpoint in main.py to include scheduler info:
+```python
+from app.tasks.scheduler import get_scheduler_status
+
+@app.get('/api/health')
+def health():
+    from app.services.task_store import load_tasks
+    tasks = load_tasks()
+    sched = get_scheduler_status()
+    return {
+        'status':            'ok',
+        'timestamp':         datetime.utcnow().isoformat(),
+        'tasks_loaded':      len(tasks),
+        'scheduler_running': sched['running'],
+        'scheduled_jobs':    sched['job_count'],
+    }
+```
+
+Add apscheduler to requirements.txt if not already present.
+
+
+# ============================================================
+# B11 — Tasks router: update toggle + run endpoints
+#        to use scheduler
+# ============================================================
+
+Open app/routers/tasks.py (written in B3).
+Update the toggle and run endpoints to call the scheduler.
+
+Find the PATCH /api/tasks/{id}/toggle endpoint and update it:
+
+```python
+@router.patch('/{task_id}/toggle')
+def toggle_task(task_id: str):
+    task = get_task_by_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail='Task not found')
+
+    new_enabled = not task.get('enabled', True)
+    updated = update_task(task_id, {'enabled': new_enabled})
+
+    # Wire to scheduler
+    from app.tasks.scheduler import register_task, unregister_task
+    if new_enabled:
+        register_task(updated)
+    else:
+        unregister_task(task_id)
+
+    return updated
+```
+
+Find the POST /api/tasks/{id}/run endpoint and update it:
+
+```python
+@router.post('/{task_id}/run')
+def run_task_now(task_id: str):
+    task = get_task_by_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail='Task not found')
+
+    if not task.get('enabled', True):
+        raise HTTPException(
+            status_code=400,
+            detail='Cannot run a disabled task'
+        )
+
+    from app.tasks.scheduler import trigger_now
+    provisional_run_id = trigger_now(task)
+
+    return {
+        'status':  'triggered',
+        'run_id':  provisional_run_id,
+        'message': f"Task '{task['process_name']}' started in background",
+    }
+```
+
+Also update the POST /api/tasks (create) endpoint to
+auto-register non-adhoc tasks:
+
+```python
+# At the end of the create endpoint, after task is saved:
+if task_data.get('schedule_type') != 'adhoc' and task_data.get('enabled', True):
+    from app.tasks.scheduler import register_task
+    register_task(created_task)
+```
+
+And the DELETE /api/tasks/{id} endpoint:
+```python
+# Before deleting, unregister from scheduler:
+from app.tasks.scheduler import unregister_task
+unregister_task(task_id)
+```
+
+
+# ============================================================
+# B12 — Log service + Logs router
+# ============================================================
+
+Write app/services/log_service.py
+
+```python
+"""
+Log Service — reads/writes JSON log files from data/logs/
+
+Each log file is named {run_id}.json and contains:
+{
+  "run_id": "...",
+  "task_id": "...",
+  "task_name": "...",
+  "task_type": "...",
   "status": "success|failed|skipped",
   "started_at": "ISO datetime",
   "completed_at": "ISO datetime",
@@ -187,80 +1169,746 @@ json{
     {"timestamp": "...", "level": "INFO|WARNING|ERROR", "message": "..."}
   ]
 }
-Create app/services/log_service.py:
+"""
+import json
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+from app.config import settings
 
-write_log(result: ExecutionResult) — writes the JSON file
-list_logs(status, start_date, end_date, search, page, page_size) — reads all log files from data/logs/, filters in memory, paginates, returns summary list (no entries array — just metadata)
-get_log(run_id) — returns full log file including entries
-get_log_summary() — returns {total, success, failed, skipped}
-export_logs(start_date, end_date) — returns a list of matching full log dicts for download
-
-Build app/routers/logs.py:
-
-GET /api/logs — query params: status, start, end, search, page (default 1), page_size (default 15)
-GET /api/logs/summary — for the stat strip
-GET /api/logs/:run_id — full log with entries
-GET /api/logs/export — returns JSON file download of filtered logs
+logger = logging.getLogger(__name__)
 
 
-
-B8 — Scheduler (APScheduler)
-
-Add apscheduler to requirements.txt. Build app/tasks/scheduler.py.
-Use APScheduler with BackgroundScheduler. On app startup (FastAPI lifespan event), load all enabled tasks from task store and register them as jobs based on their schedule_type:
-
-every_15_min → IntervalTrigger(minutes=15)
-every_1_hour → IntervalTrigger(hours=1)
-daily → CronTrigger(hour=HH, minute=MM) using the task's daily_time
-adhoc → do not register (run only on manual trigger)
-
-Each scheduled job calls TaskExecutor(task).run().
-Expose functions: register_task(task), unregister_task(task_id), trigger_task_now(task_id) — this is what the "Run Now" button calls.
-Wire to the tasks router:
-
-POST /api/tasks/:id/run — calls trigger_task_now(task_id). Returns {run_id, status: "triggered"} immediately (do not wait for completion — run in background thread).
-When a task is toggled off (PATCH /api/tasks/:id/toggle → enabled=False): call unregister_task.
-When toggled on: call register_task.
-When a task is created with a non-adhoc schedule: auto-register it.
-When a task is deleted: unregister it.
-
-On app shutdown (lifespan end): call scheduler.shutdown().
+def _log_dir() -> Path:
+    p = Path(settings.LOG_DIR)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-B9 — Import / Export router
+def list_logs(
+    status:    Optional[str] = None,
+    search:    Optional[str] = None,
+    start:     Optional[str] = None,
+    end:       Optional[str] = None,
+    page:      int = 1,
+    page_size: int = 15,
+) -> dict:
+    """
+    List log summaries (no entries array — metadata only).
+    Returns paginated results.
+    """
+    log_files = sorted(
+        _log_dir().glob('*.json'),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
 
-Build app/routers/import_export.py.
-Import:
-The Excel file has 3 sheets: "Draft" (covers Draft/Send and Reminder rows), "Email Tracking", "Download". Column names match exactly the JSON field names provided (map them to snake_case in the importer).
+    # Skip the app.log file if it ends up here
+    log_files = [f for f in log_files if f.stem != 'app']
 
-GET /api/import/template — generates and returns a blank Excel file with the 3 correct sheets and header rows using openpyxl. Response: file download with Content-Disposition: attachment; filename=task_template.xlsx
-POST /api/import/upload — accepts multipart/form-data with an .xlsx file. Parse each sheet, map rows to Task Pydantic models, validate, write to task store. Return {imported: n, skipped: n, errors: [{row, reason}]}. Skip rows where "Need to Process" = "N". Rows already existing by Process Name: update rather than duplicate.
+    results = []
+    for f in log_files:
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
 
-Export:
+        # Filters
+        if status and status.lower() != 'all':
+            if data.get('status', '').lower() != status.lower():
+                continue
 
-GET /api/export/meta — returns {last_exported_at: ISO datetime or null} (store this in a small data/meta.json file, updated on every export)
-GET /api/export/estimate — query params same as export options. Returns {estimated_bytes: n} based on current data size estimate
-POST /api/export — body: {format: "json"|"excel", include_tasks: bool, include_logs: bool, start_date, end_date}. Builds and returns a file download. Excel format: same 3-sheet structure as import. JSON format: {tasks: [...], logs: [...]}. Update last_exported_at in meta.json.
+        if search:
+            if search.lower() not in data.get('task_name', '').lower():
+                continue
+
+        if start:
+            try:
+                if data.get('started_at', '') < start:
+                    continue
+            except Exception:
+                pass
+
+        if end:
+            try:
+                if data.get('started_at', '') > end:
+                    continue
+            except Exception:
+                pass
+
+        # Summary (no entries)
+        results.append({
+            'id':          data.get('run_id', f.stem),
+            'taskName':    data.get('task_name', ''),
+            'taskType':    data.get('task_type', ''),
+            'timestamp':   data.get('started_at', ''),
+            'duration':    f"{data.get('duration_ms', 0) / 1000:.1f}s",
+            'status':      data.get('status', 'unknown').capitalize(),
+        })
+
+    total = len(results)
+    start_idx = (page - 1) * page_size
+    end_idx   = start_idx + page_size
+
+    return {
+        'logs':      results[start_idx:end_idx],
+        'total':     total,
+        'page':      page,
+        'page_size': page_size,
+        'pages':     (total + page_size - 1) // page_size,
+    }
 
 
-
-B10 — Final wiring, error handling & run instructions
-
-Final backend integration pass.
-Global exception handler in main.py: catch all unhandled exceptions, log them with Python's logging module, return {"error": "Internal server error", "detail": str(e)} with status 500. Never expose raw tracebacks to the frontend.
-Structured logging: Configure Python logging to write to both stdout and data/logs/app.log using a rotating file handler (max 5MB, keep 3 backups). Log format: %(asctime)s | %(levelname)s | %(name)s | %(message)s.
-CORS final config: Allow origins ["http://localhost:5173"] in dev, load allowed origins from ALLOWED_ORIGINS env var in production.
-/api/health enhancement: Return {status, timestamp, tasks_loaded: n, scheduler_running: bool, log_dir_writable: bool}.
-README.md: Write a concise setup guide:
-
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-Copy .env.example to .env and fill in credentials
-uvicorn app.main:app --reload --port 8000
-Frontend: cd frontend && npm install && npm run dev
-
-Create .env.example with all required keys and placeholder values, documented with inline comments.
-Final check instruction to Copilot: Verify that every router is mounted in main.py, every service used by a router is imported correctly, the scheduler starts on app boot, and the log directory is created if it doesn't exist (data/logs/ and data/ auto-created on startup using Path.mkdir(parents=True, exist_ok=True)).
+def get_log(run_id: str) -> Optional[dict]:
+    """Return full log including entries array."""
+    log_file = _log_dir() / f"{run_id}.json"
+    if not log_file.exists():
+        return None
+    return json.loads(log_file.read_text())
 
 
-Run these in order, share your existing tool code after B6 so Copilot can fill in the actual _run_draft_send(), _run_reminder(), _run_email_tracking(), and _run_download() stubs with your real logic. That's the cleanest handoff point.
+def get_summary() -> dict:
+    """Return total / successful / failed counts."""
+    log_files = list(_log_dir().glob('*.json'))
+    log_files = [f for f in log_files if f.stem != 'app']
+
+    total = successful = failed = skipped = 0
+    for f in log_files:
+        try:
+            data = json.loads(f.read_text())
+            status = data.get('status', '').lower()
+            total += 1
+            if status == 'success':    successful += 1
+            elif status == 'failed':   failed += 1
+            elif status == 'skipped':  skipped += 1
+        except Exception:
+            pass
+
+    return {
+        'total':      total,
+        'successful': successful,
+        'failed':     failed,
+        'skipped':    skipped,
+    }
+
+
+def export_logs(start: Optional[str] = None, end: Optional[str] = None) -> list[dict]:
+    """Return full logs for download."""
+    log_files = list(_log_dir().glob('*.json'))
+    log_files = [f for f in log_files if f.stem != 'app']
+    results = []
+    for f in log_files:
+        try:
+            data = json.loads(f.read_text())
+            if start and data.get('started_at', '') < start:
+                continue
+            if end and data.get('started_at', '') > end:
+                continue
+            results.append(data)
+        except Exception:
+            pass
+    return sorted(results, key=lambda d: d.get('started_at', ''), reverse=True)
+```
+
+Write app/routers/logs.py:
+
+```python
+import json
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse, Response
+from app.services.log_service import list_logs, get_log, get_summary, export_logs
+
+router = APIRouter(prefix='/logs', tags=['logs'])
+
+
+@router.get('')
+def get_logs(
+    status:    str = Query('all'),
+    search:    str = Query(''),
+    start:     str = Query(''),
+    end:       str = Query(''),
+    page:      int = Query(1, ge=1),
+    page_size: int = Query(15, ge=1, le=100),
+):
+    return list_logs(
+        status=status or None,
+        search=search or None,
+        start=start or None,
+        end=end or None,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get('/summary')
+def logs_summary():
+    return get_summary()
+
+
+@router.get('/export')
+def logs_export(
+    start: str = Query(''),
+    end:   str = Query(''),
+):
+    logs = export_logs(start or None, end or None)
+    content = json.dumps(logs, indent=2)
+    return Response(
+        content=content,
+        media_type='application/json',
+        headers={
+            'Content-Disposition': 'attachment; filename="execution_logs.json"'
+        },
+    )
+
+
+@router.get('/{run_id}')
+def get_log_detail(run_id: str):
+    log = get_log(run_id)
+    if not log:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail='Log not found')
+    return log
+```
+
+Add to app/main.py:
+  from app.routers.logs import router as logs_router
+  app.include_router(logs_router, prefix='/api')
+
+
+# ============================================================
+# B13 — Import/Export router (Excel format matching existing tool)
+# ============================================================
+
+Write app/routers/import_export.py
+
+The Excel file has 3 sheets matching the existing tool:
+  Sheet 1: "Draft"          ← Draft/Send and Reminder tasks
+  Sheet 2: "Email Tracking" ← EmailTracking tasks
+  Sheet 3: "Download"       ← Download tasks
+
+Column names in each sheet match EXACTLY the JSON config keys
+from the original tool (see B2 models). The importer maps
+Excel column headers → Task Pydantic model fields.
+
+```python
+import io
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi.responses import Response
+import openpyxl
+
+from app.services.task_store import load_tasks, create_task
+
+router = APIRouter(prefix='/import-export', tags=['import-export'])
+logger = logging.getLogger(__name__)
+
+META_FILE = Path('data/meta.json')
+
+
+def _load_meta() -> dict:
+    if META_FILE.exists():
+        return json.loads(META_FILE.read_text())
+    return {'last_exported_at': None}
+
+
+def _save_meta(data: dict):
+    META_FILE.parent.mkdir(parents=True, exist_ok=True)
+    META_FILE.write_text(json.dumps(data, indent=2))
+
+
+# ── Column name → field mappings (match existing Excel exactly) ──
+
+DRAFT_COLUMNS = {
+    'Process Name':                   'process_name',
+    'Subject Line':                   'subject_line',
+    'Need to Process Y/N':            'need_to_process',
+    'TO: List of Stakeholders':       'to_stakeholders',
+    'CC: List of Stakeholders':       'cc_stakeholders',
+    'Attachment Folder Path':         'attachment_folder_path',
+    'Attachment File Name':           'attachment_file_name',
+    'Shared Mailbox Name':            'mailbox',
+    'Log Output Folder Path':         'log_output_folder',
+    'Email Body Excel/Docx':          'email_body_source',
+    'Email Body Path (.docx)':        'email_body_path',
+    'Reminder Email Body Path (docx)':'reminder_body_path',
+    'Draft/Send':                     'draft_or_send',
+    'Find_One':   'find_one',   'Replace_One': 'replace_one',
+    'Find_Two':   'find_two',   'Replace_Two': 'replace_two',
+    'Find_Three': 'find_three', 'Replace_Three':'replace_three',
+    'Find_Four':  'find_four',  'Replace_Four': 'replace_four',
+    'Find_Five':  'find_five',  'Replace_Five': 'replace_five',
+    'Voting_Option': 'voting_option',
+}
+
+TRACKING_COLUMNS = {
+    'Process Name':                  'process_name',
+    'Need to Process Y/N':           'need_to_process',
+    'Due Date':                      'due_date',
+    'Subject Line':                  'subject_line',
+    'Partial Subject Y/N':           'partial_subject',
+    'TO: List of Stakeholders':      'to_stakeholders',
+    'Shared Mailbox Name':           'mailbox',
+    'Screening Mailbox Folder':      'screening_folder',
+    'Log Output Folder Path':        'log_output_folder',
+    'Save Email':                    'save_email',
+    'Save Email Both/Specific':      'save_both',
+    'Save Email As PDF/msg':         'save_as',
+    'Start Date':                    'start_date',
+    'End Date':                      'end_date',
+    'Download attachment':           'download_attachment',
+    'All Attachments or Specific':   'all_or_specific',
+    'Attachment File Type':          'file_type',
+    'If Zip , Extract All Y/N':      'extract_zip',
+}
+
+DOWNLOAD_COLUMNS = {k: v for k, v in TRACKING_COLUMNS.items()
+                    if k not in ('Due Date', 'TO: List of Stakeholders')}
+
+
+def _yn_to_bool(value: str) -> bool:
+    return str(value).strip().upper() == 'Y'
+
+
+def _row_to_task(row: dict, task_type: str) -> Optional[dict]:
+    """Convert an Excel row dict to a Task dict."""
+    if not row.get('process_name', '').strip():
+        return None
+    if not _yn_to_bool(row.get('need_to_process', 'N')):
+        return None   # Skip rows marked N
+
+    config = {k: v for k, v in row.items()
+              if k not in ('process_name', 'mailbox',
+                           'log_output_folder', 'need_to_process')}
+
+    # Rebuild find_replace_pairs from individual columns
+    pairs = []
+    for i, suffix in enumerate(['one', 'two', 'three', 'four', 'five'], 1):
+        find = config.pop(f'find_{suffix}', '')
+        repl = config.pop(f'replace_{suffix}', '')
+        if find:
+            pairs.append({'find': str(find), 'replace': str(repl)})
+    if pairs:
+        config['find_replace_pairs'] = pairs
+
+    # Convert Y/N fields to bool
+    for field in ('partial_subject', 'save_email', 'download_attachment', 'extract_zip'):
+        if field in config:
+            config[field] = _yn_to_bool(config[field])
+
+    return {
+        'process_name':    row.get('process_name', '').strip(),
+        'task_type':       task_type,
+        'schedule_type':   'adhoc',
+        'is_shared_mailbox': bool(row.get('mailbox', '').strip()),
+        'mailbox':         row.get('mailbox', '').strip(),
+        'log_output_folder': row.get('log_output_folder', '').strip(),
+        'need_to_process': True,
+        'enabled':         True,
+        'config':          config,
+    }
+
+
+def _parse_sheet(ws, col_map: dict, task_type: str) -> tuple[list, list]:
+    """Parse one worksheet. Returns (imported_tasks, errors)."""
+    headers = [str(cell.value).strip() if cell.value else ''
+               for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+
+    tasks, errors = [], []
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        row_dict = {}
+        for col_idx, value in enumerate(row):
+            if col_idx < len(headers) and headers[col_idx] in col_map:
+                field = col_map[headers[col_idx]]
+                row_dict[field] = str(value).strip() if value is not None else ''
+
+        task = _row_to_task(row_dict, task_type)
+        if task:
+            tasks.append(task)
+        elif any(v for v in row if v):   # non-empty row that was skipped
+            errors.append(f"Row {row_idx}: skipped (Need to Process=N or empty name)")
+
+    return tasks, errors
+
+
+# ── GET /api/import-export/template ──────────────────────
+
+@router.get('/template')
+def download_template():
+    """Return a blank Excel template with correct sheets and headers."""
+    wb = openpyxl.Workbook()
+
+    def _add_sheet(wb, name, columns, first=False):
+        ws = wb.active if first else wb.create_sheet(title=name)
+        if first:
+            ws.title = name
+        ws.append(list(columns.keys()))
+        return ws
+
+    _add_sheet(wb, 'Draft', DRAFT_COLUMNS, first=True)
+    _add_sheet(wb, 'Email Tracking', TRACKING_COLUMNS)
+    _add_sheet(wb, 'Download', DOWNLOAD_COLUMNS)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return Response(
+        content=buf.read(),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={
+            'Content-Disposition': 'attachment; filename="task_template.xlsx"'
+        },
+    )
+
+
+# ── POST /api/import-export/upload ───────────────────────
+
+@router.post('/upload')
+async def upload_file(file: UploadFile = File(...)):
+    """Import tasks from the uploaded Excel file."""
+    if not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=400, detail='Only .xlsx files are accepted')
+
+    content = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'Invalid Excel file: {e}')
+
+    all_tasks, all_errors = [], []
+
+    sheet_map = {
+        'Draft':          (DRAFT_COLUMNS,    'draft_send'),
+        'Email Tracking': (TRACKING_COLUMNS, 'email_tracking'),
+        'Download':       (DOWNLOAD_COLUMNS, 'download'),
+    }
+
+    for sheet_name, (col_map, task_type) in sheet_map.items():
+        if sheet_name not in wb.sheetnames:
+            all_errors.append(f"Sheet '{sheet_name}' not found — skipped")
+            continue
+        tasks, errors = _parse_sheet(wb[sheet_name], col_map, task_type)
+        all_tasks.extend(tasks)
+        all_errors.extend(errors)
+
+    imported = 0
+    existing = {t['process_name']: t for t in load_tasks()}
+
+    for task in all_tasks:
+        if task['process_name'] in existing:
+            all_errors.append(
+                f"'{task['process_name']}' already exists — skipped (no overwrite)"
+            )
+        else:
+            create_task(task)
+            imported += 1
+
+    return {
+        'imported': imported,
+        'skipped':  len(all_tasks) - imported,
+        'errors':   all_errors,
+    }
+
+
+# ── GET /api/import-export/meta ──────────────────────────
+
+@router.get('/meta')
+def get_meta():
+    return _load_meta()
+
+
+# ── POST /api/import-export/export ───────────────────────
+
+@router.post('/export')
+def export_data(
+    format:        str  = Query('json', regex='^(json|excel)$'),
+    include_tasks: bool = Query(True),
+    include_logs:  bool = Query(True),
+):
+    tasks = load_tasks() if include_tasks else []
+
+    from app.services.log_service import export_logs
+    logs = export_logs() if include_logs else []
+
+    _save_meta({'last_exported_at': datetime.utcnow().isoformat()})
+
+    if format == 'excel':
+        wb = openpyxl.Workbook()
+        ws_tasks = wb.active
+        ws_tasks.title = 'Tasks'
+        if tasks:
+            ws_tasks.append(list(tasks[0].keys()))
+            for t in tasks:
+                ws_tasks.append([str(v) for v in t.values()])
+
+        ws_logs = wb.create_sheet('Logs')
+        if logs:
+            ws_logs.append(['run_id', 'task_name', 'status',
+                            'started_at', 'duration_ms'])
+            for lg in logs:
+                ws_logs.append([
+                    lg.get('run_id', ''), lg.get('task_name', ''),
+                    lg.get('status', ''), lg.get('started_at', ''),
+                    lg.get('duration_ms', 0),
+                ])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(
+            content=buf.read(),
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': 'attachment; filename="export.xlsx"'},
+        )
+
+    # JSON format
+    payload = {'tasks': tasks, 'logs': logs,
+               'exported_at': datetime.utcnow().isoformat()}
+    return Response(
+        content=json.dumps(payload, indent=2),
+        media_type='application/json',
+        headers={'Content-Disposition': 'attachment; filename="export.json"'},
+    )
+```
+
+Add to app/main.py:
+  from app.routers.import_export import router as ie_router
+  app.include_router(ie_router, prefix='/api')
+
+
+# ============================================================
+# B14 — Global error handling, structured logging, health check
+# ============================================================
+
+Open app/main.py. Make these additions/updates.
+
+Step 1 — Structured logging setup.
+Add this at the very top of main.py, before app is created:
+
+```python
+import logging
+import logging.handlers
+from pathlib import Path
+
+Path('data/logs').mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            'data/logs/app.log',
+            maxBytes=5 * 1024 * 1024,  # 5MB
+            backupCount=3,
+        ),
+    ],
+)
+```
+
+Step 2 — Global exception handler.
+Add this after app is created:
+
+```python
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger = logging.getLogger('app')
+    logger.error(f"Unhandled exception on {request.url}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            'error': 'Internal server error',
+            'detail': str(exc),
+        },
+    )
+```
+
+Step 3 — Request logging middleware.
+```python
+import time
+from fastapi import Request
+
+@app.middleware('http')
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration = (time.time() - start) * 1000
+    logging.getLogger('app').info(
+        f"{request.method} {request.url.path} "
+        f"→ {response.status_code} ({duration:.0f}ms)"
+    )
+    return response
+```
+
+Step 4 — Update CORS middleware.
+Replace any existing CORS config with:
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS.split(',')
+        if hasattr(settings, 'ALLOWED_ORIGINS')
+        else ['http://localhost:5173'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+```
+
+Add to app/config.py:
+  ALLOWED_ORIGINS: str = 'http://localhost:5173'
+
+Add to .env:
+  ALLOWED_ORIGINS=http://localhost:5173
+
+Step 5 — Final health check endpoint.
+Update /api/health to return full system status:
+
+```python
+@app.get('/api/health')
+def health():
+    from app.services.task_store import load_tasks
+    from app.tasks.scheduler import get_scheduler_status
+    from app.services.log_service import get_summary
+
+    tasks = load_tasks()
+    sched = get_scheduler_status()
+    log_summary = get_summary()
+
+    return {
+        'status':            'ok',
+        'timestamp':         datetime.utcnow().isoformat(),
+        'tasks_loaded':      len(tasks),
+        'scheduler_running': sched['running'],
+        'scheduled_jobs':    sched['job_count'],
+        'log_dir_writable':  Path(settings.LOG_DIR).exists(),
+        'log_summary':       log_summary,
+    }
+```
+
+
+# ============================================================
+# B15 — Final integration check + README
+# ============================================================
+
+Step 1 — Confirm all routers are mounted.
+Open app/main.py and verify it includes ALL of these:
+
+  from app.routers.tasks         import router as tasks_router
+  from app.routers.mailbox       import router as mailbox_router
+  from app.routers.logs          import router as logs_router
+  from app.routers.import_export import router as ie_router
+
+  app.include_router(tasks_router,   prefix='/api')
+  app.include_router(mailbox_router, prefix='/api')
+  app.include_router(logs_router,    prefix='/api')
+  app.include_router(ie_router,      prefix='/api')
+
+If any are missing, add them now.
+
+Step 2 — Verify sys.path setup.
+The executor and mailbox service both do:
+  sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+
+Confirm this path correctly resolves to the project's src/ folder.
+Print the resolved path in a quick test:
+  python -c "from pathlib import Path; print(Path('app/tasks/executor.py').parent.parent.parent / 'src')"
+Expected output: should end in /src
+
+Step 3 — Run the server:
+  uvicorn app.main:app --reload --port 8000
+
+Step 4 — Test all endpoints:
+
+  # Health
+  curl http://localhost:8000/api/health
+
+  # Tasks CRUD
+  curl http://localhost:8000/api/tasks
+  curl -X POST http://localhost:8000/api/tasks \
+    -H "Content-Type: application/json" \
+    -d '{"process_name":"Test","task_type":"draft_send","schedule_type":"adhoc","is_shared_mailbox":false,"mailbox":"test@co.com","log_output_folder":"C:\\Logs","need_to_process":true,"enabled":true,"config":{"subject_line":"Hello","to_stakeholders":"test@co.com","draft_or_send":"draft"}}'
+
+  # Mailbox (will return 503 if proxy unreachable — that is OK)
+  curl http://localhost:8000/api/mailbox/emails
+
+  # Logs
+  curl http://localhost:8000/api/logs/summary
+
+  # Import template
+  curl http://localhost:8000/api/import-export/template --output template.xlsx
+
+Step 5 — Write README.md in project root:
+
+```markdown
+# Your Personal Assistant — Backend
+
+## Setup
+
+1. Create and activate virtual environment:
+   python -m venv venv
+   source venv/bin/activate   # Windows: venv\Scripts\activate
+
+2. Install dependencies:
+   pip install -r requirements.txt
+
+3. Copy environment config:
+   cp .env.example .env
+   # Edit .env with your actual values
+
+4. Run the server:
+   uvicorn app.main:app --reload --port 8000
+
+5. API docs available at:
+   http://localhost:8000/docs
+
+## Project Structure
+
+  app/                     ← FastAPI application (new code)
+    routers/               ← HTTP endpoints
+    services/              ← Business logic (task store, log service, mailbox)
+    tasks/                 ← Task executor + APScheduler
+    config.py              ← Settings from .env
+    main.py                ← FastAPI app entry point
+  src/                     ← Existing working code (DO NOT MODIFY)
+    helpers/               ← fetch_token, errors, common utilities
+    personal_routes/       ← Per-task-type logic for personal mailbox
+    shared_routes/         ← Per-task-type logic for shared mailbox
+    workers/               ← Worker entry points called by executor
+    email_manager.py       ← Original desktop app entry point
+  data/
+    tasks.json             ← Task configuration store
+    logs/                  ← Per-run JSON log files + app.log
+    meta.json              ← Import/export metadata
+
+## Key Design Decisions
+
+- src/ is READ ONLY. The FastAPI app wraps it without modifying it.
+- The TaskExecutor calls src/workers/* exactly as email_manager.py does.
+- Both personal and shared mailboxes use the corporate Graph API proxy:
+    https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+- Authentication is handled by src/helpers/fetch_token.py — reused as-is.
+- Logs are stored as individual JSON files (one per run) in data/logs/
+```
+
+Step 6 — Write .env.example:
+
+```
+APP_ENV=development
+LOG_DIR=data/logs
+TASKS_FILE=data/tasks.json
+PERSONAL_MAILBOX=your.name@company.com
+GRAPH_PROXY_BASE=https://o365-graph-proxy-ms6.gaiacloud.jpmchase.net
+VERIFY_SSL=false
+ALLOWED_ORIGINS=http://localhost:5173
+```
