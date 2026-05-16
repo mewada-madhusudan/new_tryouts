@@ -1,0 +1,548 @@
+# ============================================================
+# R-B1 (REVISED) — Backend: rules router + enterprise LLM service
+#
+# KEY DIFFERENCE FROM PREVIOUS VERSION:
+# The LLM is an internal enterprise system, NOT Anthropic API.
+# Working code already exists in the project for:
+#   - Getting the access token
+#   - Getting any other required details before the API call
+#   - Calling /invoke to start a conversation + get response
+#   - Calling /archive with the conversation ID to clean up
+#
+# Every LLM call must:
+#   1. Get token + required details using existing functions
+#   2. Call /invoke → get response + conversation_id
+#   3. Call /archive with that conversation_id
+#   4. Parse the LLM response as JSON
+#
+# DO NOT use anthropic SDK, openai, httpx to api.anthropic.com,
+# or any external LLM endpoint.
+# DO NOT reimplement token generation or endpoint URLs.
+# Import and call the existing working functions exactly as-is.
+# ============================================================
+
+
+# ============================================================
+# STEP 1 — Read existing LLM code before writing anything
+# ============================================================
+
+Before writing a single line of rules_service.py, read the
+existing LLM integration code in the project.
+
+Find the file(s) that contain:
+  - The function that gets the access token for the LLM
+  - The function that calls the /invoke endpoint
+  - The function that calls the /archive endpoint
+  - Any helper that sets up required headers or request details
+
+Report back:
+  1. The file paths where these functions live
+  2. The exact function names and their signatures
+  3. What /invoke returns — specifically:
+       - Where is the response text in the return value?
+       - Where is the conversation_id in the return value?
+  4. What /archive expects — specifically:
+       - Does it take just the conversation_id?
+       - Any other required parameters?
+  5. Whether /invoke and /archive are called as standalone
+     functions or as methods on a class
+
+Do NOT write any new code until you have answered all 5 points.
+The entire rules_service.py depends on these answers.
+
+
+# ============================================================
+# STEP 2 — Create app/services/rules_service.py
+# ============================================================
+
+Now write app/services/rules_service.py using what you read
+in Step 1. This file calls the enterprise LLM — not any
+external API.
+
+```python
+"""
+app/services/rules_service.py
+
+Sends plain English rules + email data to the internal
+enterprise LLM system.
+
+Flow for every call:
+  1. Get access token + required details (existing functions)
+  2. POST to /invoke → get LLM response + conversation_id
+  3. POST to /archive with conversation_id (cleanup)
+  4. Parse and return the JSON decisions
+
+DO NOT use anthropic, openai, or any external LLM SDK.
+DO NOT reimplement token or endpoint logic.
+Import existing functions from wherever they live in the project.
+"""
+import json
+import logging
+import sys
+from pathlib import Path
+
+# Add src/ to path so existing LLM helpers are importable
+# Adjust this path if the LLM code lives elsewhere in the project
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+
+logger = logging.getLogger(__name__)
+
+
+def _build_system_prompt(rules: list[dict]) -> str:
+    """
+    Build the instruction block that tells the LLM how to classify
+    emails. This becomes the system/instruction part of the prompt.
+    """
+    rules_text = '\n'.join(
+        f"{i+1}. [{r['name']}]: {r['instruction']}"
+        for i, r in enumerate(rules)
+    )
+    return f"""You are an email organiser. Apply these rules in order:
+
+{rules_text}
+
+For each email, apply the FIRST matching rule only.
+If no rule matches, set status to "no_match".
+
+Respond ONLY with a valid JSON array — no markdown, no explanation outside the array.
+Each element must have exactly these fields:
+  "email_id"   : the email ID I gave you (string)
+  "rule_id"    : the matching rule number as a string, empty string if no match
+  "rule_name"  : the matching rule name, empty string if no match
+  "folder"     : destination folder extracted from the rule, empty string if no match
+  "confidence" : one of "high", "medium", "low"
+  "reasoning"  : one or two sentences explaining the decision
+  "status"     : one of "moved", "no_match", "error"
+"""
+
+
+def _build_email_block(emails: list[dict]) -> str:
+    """Format emails as the user message content."""
+    lines = []
+    for email in emails:
+        lines.append(
+            f"EMAIL_ID: {email.get('id', '')}\n"
+            f"From: {email.get('sender_name', '')} <{email.get('sender_email', '')}>\n"
+            f"Subject: {email.get('subject', '')}\n"
+            f"Preview: {email.get('preview', '')[:300]}\n"
+            f"---"
+        )
+    return '\n'.join(lines)
+
+
+def _call_llm(prompt: str) -> str:
+    """
+    Call the internal enterprise LLM.
+
+    Pattern (fill in exact function names from Step 1):
+      1. Get access token using existing token function
+      2. Get any other required details
+      3. Call /invoke with the prompt
+      4. Extract conversation_id from response
+      5. Call /archive with conversation_id
+      6. Return the response text
+
+    IMPORTANT: Read the existing /invoke and /archive code
+    in Step 1 and mirror the call pattern EXACTLY here.
+    Only the prompt content changes — everything else
+    (headers, auth, endpoint construction) must use the
+    existing functions as-is.
+
+    Template — replace function names and field access
+    based on what you found in Step 1:
+    """
+
+    # Step 1: Get token + required details
+    # Replace with actual function name from existing code:
+    #   token = get_llm_token()        ← adjust name
+    #   headers = build_llm_headers()  ← adjust if needed
+    #   config = get_llm_config()      ← adjust if needed
+
+    # Step 2: Call /invoke
+    # Replace with actual invoke function from existing code:
+    #   response = invoke_llm(prompt=prompt, token=token)
+    #   OR
+    #   response = llm_client.invoke(message=prompt)
+    #   OR
+    #   response = call_invoke_endpoint(token, prompt)
+
+    # Step 3: Extract conversation_id from response
+    # Replace with actual field name from Step 1:
+    #   conversation_id = response.get('conversation_id')
+    #   OR
+    #   conversation_id = response['id']
+    #   OR
+    #   conversation_id = response.conversationId
+
+    # Step 4: Extract the response text
+    # Replace with actual field path from Step 1:
+    #   response_text = response.get('response')
+    #   OR
+    #   response_text = response['message']['content']
+    #   OR
+    #   response_text = response.output
+
+    # Step 5: Archive to clean up conversation
+    # Replace with actual archive function from existing code:
+    #   archive_llm_conversation(conversation_id, token=token)
+    #   OR
+    #   llm_client.archive(conversation_id)
+    #   OR
+    #   call_archive_endpoint(token, conversation_id)
+
+    # Step 6: Return response text for JSON parsing
+    #   return response_text
+
+    raise NotImplementedError(
+        "Fill in _call_llm() using the function names from Step 1. "
+        "Replace the template comments with actual calls."
+    )
+
+
+def run_rules(rules: list[dict], emails: list[dict]) -> list[dict]:
+    """
+    Main entry point. Send all rules + all emails to the
+    enterprise LLM in a single /invoke call. Archive after.
+
+    Args:
+        rules:  list of {id, name, instruction} — active rules only
+        emails: list of email dicts from mailbox_service
+
+    Returns:
+        list of decision dicts, one per email
+    """
+    if not rules:
+        raise ValueError("No rules provided")
+    if not emails:
+        return []
+
+    # Build the full prompt
+    # Combine system instructions + email data into one message
+    # because enterprise /invoke typically takes a single prompt string
+    system_part = _build_system_prompt(rules)
+    email_part  = _build_email_block(emails)
+    full_prompt = f"{system_part}\n\nHere are the emails to classify:\n\n{email_part}"
+
+    logger.info(
+        f"Calling enterprise LLM: {len(emails)} emails, "
+        f"{len(rules)} rules"
+    )
+
+    # Call LLM (invoke + archive handled inside _call_llm)
+    response_text = _call_llm(full_prompt)
+
+    # Parse JSON response
+    # Strip markdown fences if LLM wraps output in them
+    cleaned = response_text.strip()
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+
+    try:
+        decisions = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.error(f"LLM returned invalid JSON: {e}\nRaw: {response_text[:500]}")
+        raise ValueError(f"LLM did not return valid JSON: {e}")
+
+    logger.info(f"LLM returned {len(decisions)} decisions")
+    return decisions
+```
+
+--- CRITICAL INSTRUCTION FOR COPILOT ---
+
+After writing the template above, go back to the files you
+read in Step 1.
+
+Fill in _call_llm() completely:
+  - Replace every "← adjust name" comment with the real call
+  - Remove all the "OR" alternatives — pick the one that
+    matches the existing code
+  - Remove the NotImplementedError at the bottom
+  - The finished _call_llm() must have NO comments referencing
+    alternatives — just clean working code
+
+The finished function should look something like this
+(exact names will differ — use what you found):
+
+```python
+def _call_llm(prompt: str) -> str:
+    token           = get_llm_access_token()        # existing function
+    response        = invoke_llm(prompt, token)     # existing function
+    conversation_id = response['conversation_id']   # actual field name
+    response_text   = response['response']          # actual field name
+    archive_conversation(conversation_id, token)    # existing function
+    return response_text
+```
+
+
+# ============================================================
+# STEP 3 — Create app/models/rule.py
+# ============================================================
+
+```python
+from pydantic import BaseModel
+from typing import Optional, List
+
+class RuleDefinition(BaseModel):
+    id:          str
+    name:        str
+    instruction: str    # plain English sentence from the user
+
+class RunRulesRequest(BaseModel):
+    start_date:  str              # YYYY-MM-DD
+    end_date:    str              # YYYY-MM-DD
+    rules:       List[RuleDefinition]
+    is_shared:   bool = False
+    mailbox:     str  = ''
+
+class RuleResult(BaseModel):
+    emailId:         str
+    subject:         str
+    fromAddress:     str
+    matchedRuleId:   str
+    matchedRuleName: str
+    folder:          str
+    confidence:      str          # high / medium / low
+    reasoning:       str
+    status:          str          # moved / no_match / error
+    errorMessage:    Optional[str] = None
+```
+
+
+# ============================================================
+# STEP 4 — Create app/routers/rules.py
+# ============================================================
+
+```python
+import logging
+from datetime import datetime, timedelta
+from fastapi import APIRouter, HTTPException
+from app.models.rule import RunRulesRequest
+from app.services.rules_service import run_rules
+from app.services.mailbox_service import get_emails, move_email
+from app.config import settings
+
+router = APIRouter(prefix='/rules', tags=['rules'])
+logger = logging.getLogger(__name__)
+
+
+@router.post('/run')
+def run_rules_endpoint(body: RunRulesRequest):
+    """
+    Fetch emails for the date range, send all rules to the
+    enterprise LLM in one invoke call, move emails, return results.
+
+    Steps:
+      1. Fetch emails from mailbox
+      2. Filter to the requested date range
+      3. Send to LLM via rules_service.run_rules()
+         (invoke → parse → archive handled inside the service)
+      4. For each 'moved' decision, call move_email()
+      5. Return full results to the frontend
+    """
+    if not body.rules:
+        raise HTTPException(status_code=400, detail='No rules provided')
+
+    # Step 1: fetch emails
+    try:
+        mailbox = body.mailbox or settings.PERSONAL_MAILBOX
+        all_emails = get_emails(
+            is_shared=body.is_shared,
+            mailbox=mailbox,
+            filter_type='all',
+            limit=200,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot fetch emails from mailbox: {str(e)}"
+        )
+
+    # Step 2: filter by date range
+    try:
+        start_dt = datetime.strptime(body.start_date, '%Y-%m-%d')
+        end_dt   = datetime.strptime(body.end_date,   '%Y-%m-%d') \
+                   + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail='Invalid date format — use YYYY-MM-DD'
+        )
+
+    filtered = [
+        e for e in all_emails
+        if e.get('timestamp', '') >= start_dt.isoformat()[:10]
+        and e.get('timestamp', '') <= end_dt.isoformat()[:10]
+    ]
+
+    logger.info(
+        f"{len(all_emails)} total emails, "
+        f"{len(filtered)} in range {body.start_date} → {body.end_date}"
+    )
+
+    if not filtered:
+        return {
+            'total_emails':    len(all_emails),
+            'emails_in_range': 0,
+            'moved':           0,
+            'no_match':        0,
+            'errors':          0,
+            'results':         [],
+            'run_at':          datetime.utcnow().isoformat(),
+        }
+
+    # Step 3: call enterprise LLM
+    # run_rules() handles: invoke → parse JSON → archive
+    rules_dicts = [r.dict() for r in body.rules]
+    try:
+        decisions = run_rules(rules=rules_dicts, emails=filtered)
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"LLM processing failed: {str(e)}"
+        )
+
+    # Step 4: move emails + build results
+    email_map = {e['id']: e for e in filtered}
+    results   = []
+
+    for decision in decisions:
+        email_id = decision.get('email_id', '')
+        email    = email_map.get(email_id, {})
+        status   = decision.get('status', 'no_match')
+        error_msg = None
+
+        if status == 'moved' and decision.get('folder'):
+            try:
+                move_email(
+                    is_shared=body.is_shared,
+                    mailbox=mailbox,
+                    email_id=email_id,
+                    destination_folder=decision['folder'],
+                )
+            except Exception as e:
+                error_msg = str(e)
+                status    = 'error'
+                logger.warning(
+                    f"Could not move email {email_id} "
+                    f"to '{decision['folder']}': {e}"
+                )
+
+        results.append({
+            'emailId':         email_id,
+            'subject':         email.get('subject', ''),
+            'from':            email.get('sender_email', ''),
+            'matchedRuleId':   decision.get('rule_id', ''),
+            'matchedRuleName': decision.get('rule_name', ''),
+            'folder':          decision.get('folder', ''),
+            'confidence':      decision.get('confidence', 'low'),
+            'reasoning':       decision.get('reasoning', ''),
+            'status':          status,
+            'errorMessage':    error_msg,
+        })
+
+    moved    = sum(1 for r in results if r['status'] == 'moved')
+    no_match = sum(1 for r in results if r['status'] == 'no_match')
+    errors   = sum(1 for r in results if r['status'] == 'error')
+
+    logger.info(
+        f"Rules run complete: {moved} moved, "
+        f"{no_match} no match, {errors} errors"
+    )
+
+    return {
+        'total_emails':    len(all_emails),
+        'emails_in_range': len(filtered),
+        'moved':           moved,
+        'no_match':        no_match,
+        'errors':          errors,
+        'results':         results,
+        'run_at':          datetime.utcnow().isoformat(),
+    }
+```
+
+
+# ============================================================
+# STEP 5 — Register router + test
+# ============================================================
+
+Open app/main.py and add:
+  from app.routers.rules import router as rules_router
+  app.include_router(rules_router, prefix='/api')
+
+Write a quick test to confirm invoke + archive are called
+correctly before wiring to the full endpoint.
+
+Create test_llm_rules.py in the project root:
+
+```python
+"""
+Test that rules_service._call_llm() correctly:
+  1. Calls invoke with the prompt
+  2. Extracts the response text
+  3. Calls archive with the conversation_id
+
+Run: python test_llm_rules.py
+"""
+import sys
+from pathlib import Path
+sys.path.insert(0, 'src')
+
+from app.services.rules_service import run_rules
+
+TEST_RULES = [
+    {
+        'id': '1',
+        'name': 'Test Rule',
+        'instruction': 'If the email subject contains TEST, move to Test Folder.',
+    }
+]
+
+TEST_EMAILS = [
+    {
+        'id': 'email-001',
+        'sender_name': 'Test Sender',
+        'sender_email': 'test@company.com',
+        'subject': 'TEST — please classify this email',
+        'preview': 'This is a test email to verify the LLM integration.',
+        'timestamp': '2025-05-10T09:00:00',
+    },
+    {
+        'id': 'email-002',
+        'sender_name': 'Other Person',
+        'sender_email': 'other@company.com',
+        'subject': 'Weekly newsletter',
+        'preview': 'Here is your weekly update.',
+        'timestamp': '2025-05-10T10:00:00',
+    },
+]
+
+print("Calling enterprise LLM via invoke + archive...")
+try:
+    decisions = run_rules(rules=TEST_RULES, emails=TEST_EMAILS)
+    print(f"\n✓ LLM returned {len(decisions)} decisions:")
+    for d in decisions:
+        print(f"  [{d.get('status')}] {d.get('email_id')} → "
+              f"{d.get('folder') or 'no folder'} "
+              f"(confidence: {d.get('confidence')})")
+    print("\n✓ invoke called successfully")
+    print("✓ archive called successfully (no conversation leak)")
+except NotImplementedError:
+    print("✗ _call_llm() not implemented yet — complete Step 2 first")
+except Exception as e:
+    print(f"✗ Error: {e}")
+    print("  Check that token and endpoint functions are importable")
+```
+
+Expected output:
+  ✓ LLM returned 2 decisions:
+    [moved]    email-001 → Test Folder (confidence: high)
+    [no_match] email-002 → no folder (confidence: high)
+  ✓ invoke called successfully
+  ✓ archive called successfully (no conversation leak)
+
+If you see an import error: the sys.path.insert path is wrong.
+  Adjust it to point to wherever the LLM functions live.
+
+If you see a network/auth error: the token function or endpoint
+  URL is failing — debug using the existing working code as reference.
