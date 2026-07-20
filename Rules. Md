@@ -1,14 +1,28 @@
-I have a PyQt6 desktop app with a grid of application cards (likely built with QGridLayout or a custom flow layout). Each card is a widget showing title, category tag, status badge, description, and install/uninstall buttons.
+I have a PyQt6 desktop app ("PSLV") with a grid of application cards (QGridLayout or custom flow layout). Each card shows title, category tag, status badge, description, and install/uninstall buttons. There are two UI bugs to fix.
+
+Bug 1: Flip-card "Show Details" overlaps neighboring cards
 
 Each card supports a "Show Details" flip interaction — clicking/right-clicking should flip the card in place to reveal a back face with metadata (IAHub ID, Expiry Date, Version, Developed By), then flip back.
 
-Bug: The current flip implementation is not contained within the card's own widget bounds — when a card flips, it visually overlaps/bleeds into neighboring cards in the grid instead of staying clipped inside its own cell. The surrounding grid layout should never shift, resize, or be affected.
+The current flip implementation is not contained within the card's own widget bounds — when a card flips, it visually overlaps/bleeds into neighboring cards instead of staying clipped inside its own cell. The surrounding grid layout should never shift, resize, or be affected.
 
 Please:
 
-Find the widget class responsible for rendering the application cards and the code handling the "Show Details" flip animation.
-Diagnose why the flip animation is escaping the card's bounds — check for: animations targeting geometry()/resize() instead of an internal transform, missing setFixedSize() on the card container, missing clipping (e.g. no QWidget.setAttribute(Qt.WA_StyledBackground), no setMask(), or the animated child widget not being a proper child of the fixed-size container), or z-order/stacking issues with raise_().
-Refactor the flip so it's fully self-contained: wrap front and back faces in a QStackedWidget (or QStackedLayout) inside a single fixed-size container widget, and animate the transition (e.g. scale/opacity via QPropertyAnimation) without ever changing the container's own size or position in the parent QGridLayout.
-Make sure the fix keeps the grid layout completely stable — no reflow of sibling cards during or after the flip, in any window size.
-Preserve existing styling (rounded corners, shadows, spacing) on both front and back faces.
-Show me the diff/changes needed, and explain what was causing the overlap
+Find the widget class responsible for rendering the application cards and the flip animation code.
+Diagnose why the flip escapes the card's bounds — check for: animations targeting geometry()/resize() instead of an internal transform, missing setFixedSize() on the card container, missing clipping (no setAttribute(Qt.WA_StyledBackground), no setMask(), or the animated child not being a proper child of the fixed-size container), or z-order/raise_() issues.
+Refactor so it's self-contained: wrap front/back faces in a QStackedWidget (or QStackedLayout) inside one fixed-size container, and animate the transition (scale/opacity via QPropertyAnimation) without ever changing the container's size/position in the parent QGridLayout.
+Ensure sibling cards never reflow during or after the flip, at any window size.
+Preserve existing styling (rounded corners, shadows, spacing) on both faces.
+
+Bug 2: "Running Processes" side panel overlaps and truncates the main grid
+
+When a user launches an app, a "Running Processes" panel (list of running apps + a console/output area) slides in or appears on the right side of the window. Currently this panel overlaps the main card grid instead of the grid reflowing to accommodate it — this causes card titles/descriptions to get cut off mid-word (e.g. "...LEC", "Physical_Access_b...") instead of wrapping or eliding cleanly, and the console output area shows a large empty black box with no placeholder content.
+
+Please:
+
+Find the widget/layout responsible for the main grid and the Running Processes panel (likely a QSplitter, QDockWidget, or a manually positioned side widget).
+If it's manually positioned/overlaid: refactor to use a QSplitter (horizontal) or proper layout so the main grid area actually shrinks/reflows (fewer columns) when the panel opens, instead of being covered.
+Fix card text truncation: ensure titles/descriptions use proper word-wrapping or elided text (QFontMetrics.elidedText() with Qt.ElideRight) so text never cuts off mid-word, and add a tooltip showing the full text on hover.
+Improve the console/output area's empty state: replace the blank black box with a placeholder (icon + "No output yet" or similar text) when there's no active output.
+If feasible, make the panel resizable/collapsible via the QSplitter handle.
+Show me the diff/changes needed and explain the root cause of the truncation and overlap.
