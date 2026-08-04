@@ -1,0 +1,81 @@
+import zipfile
+import shutil
+import os
+import re
+
+def safe_unlock_vba(input_file, output_file=None):
+    """
+    Safely removes VBA password without destroying code
+    """
+    if output_file is None:
+        base, ext = os.path.splitext(input_file)
+        output_file = f"{base}_unlocked{ext}"
+    
+    temp_dir = 'temp_xlam_fix'
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        # Extract
+        with zipfile.ZipFile(input_file, 'r') as z:
+            z.extractall(temp_dir)
+        
+        vba_path = None
+        for root, dirs, files in os.walk(temp_dir):
+            for file in files:
+                if file == 'vbaProject.bin':
+                    vba_path = os.path.join(root, file)
+                    break
+        
+        if not vba_path:
+            print("No vbaProject.bin found!")
+            return
+        
+        print(f"Found: {vba_path}")
+        
+        # Read and analyze
+        with open(vba_path, 'rb') as f:
+            content = f.read()
+        
+        print(f"Original size: {len(content)} bytes")
+        
+        # Look for password patterns more carefully
+        # The password info is in a specific XML-like section
+        modified = content
+        
+        # Only replace if we find the exact password protection strings
+        # CMG, DPB, GC followed by ="hash"
+        patterns = [
+            (rb'CMG="[A-Za-z0-9+/=]+"', b'CMG=""'),
+            (rb'DPB="[A-Za-z0-9+/=]+"', b'DPB=""'), 
+            (rb'GC="[A-Za-z0-9+/=]+"', b'GC=""'),
+        ]
+        
+        for pattern, replacement in patterns:
+            matches = re.findall(pattern, modified)
+            if matches:
+                print(f"Found password field: {matches[0][:50]}...")
+                modified = re.sub(pattern, replacement, modified)
+        
+        # Write modified
+        with open(vba_path, 'wb') as f:
+            f.write(modified)
+        
+        print(f"Modified size: {len(modified)} bytes")
+        
+        # Repack
+        with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zout.write(file_path, arcname)
+        
+        print(f"Saved: {output_file}")
+        
+    finally:
+        # Cleanup
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+# Usage
+safe_unlock_vba('your_file.xlam')
